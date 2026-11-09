@@ -7,6 +7,7 @@ deploy/chart/charts/*.tgz
 *.env
 .env.*
 Makefile.local
+.playwright-cli/
 
 # Local reference copy of the OpenShell dashboard (stale vendored fork).
 # Canonical source: github.com/eformat/openshell-dashboard. Kept on disk for
