@@ -1,0 +1,71 @@
+{{/*
+Sandbox-injection wiring (M4) — replaces the M0 probe main process
+(`bash -c '...; exec sleep 1800'`) with the sync-agent p2p daemon. Two keys:
+
+- opencode.json: the in-sandbox OpenCode harness config exposing the sync
+  control plane (M3.5 gate shape — the key is `mcp`, NOT mcpServers). Consumed
+  two ways: baked into the derived image at /sandbox/.config/opencode/ (the
+  runtime's workspace-init seeds a FRESH PVC from the image's /sandbox —
+  sentinel-guarded, create_new semantics) and copyable by hand/daemon from
+  this ConfigMap. Mounted it can NOT be: /sandbox IS the workspace PVC.
+- create-sandbox.sh: the executable form of the main-process injection. The
+  SandboxWorkloadTemplate is gateway (SQLite) state — not a k8s object — and
+  its schema carries no command field, so the main-process spec is per-create:
+  the trailing argv after `--`. The master key is read from THIS release's
+  Secret at RUN time (never baked into the ConfigMap) and passed via the CLI
+  process env (`--env-from`), keeping it out of argv/ps output.
+
+Gated on sandboxTemplate.enabled (default render/lint stays clean).
+*/}}
+{{- if .Values.sandboxTemplate.enabled }}
+{{- $image := printf "%s/%s@%s" .Values.sandboxTemplate.image.registry .Values.sandboxTemplate.image.repository (required "sandboxTemplate.image.digest is empty — pin the derived image by REGISTRY MANIFEST digest in the deploy values file (podman local .Digest is a different hash, M0 lesson)" .Values.sandboxTemplate.image.digest) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sync-agent-sandbox-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/part-of: sync-agent-pvc
+data:
+  # The mcp block as a complete opencode.json (M3.5 gate: key `mcp`, not
+  # mcpServers). The binary path is the IMAGE copy — the exec-uploaded
+  # self-install path (.sync-agent/agents/<ver>/) is the fallback transport's
+  # mechanism and stays out of the in-sandbox config.
+  opencode.json: |-
+    {
+      "mcp": {
+        "sync-agent": {
+          "type": "local",
+          "command": [{{ .Values.sandboxTemplate.sandboxBinaryPath | quote }}, "mcp", "--root", "/sandbox"],
+          "enabled": true
+        }
+      }
+    }
+  # One-time sandbox creation (idempotency: openshell rejects duplicate names).
+  # Run from the repo root with the CLI connected:
+  #   oc -n {{ .Values.namespace }} get cm sync-agent-sandbox-config \
+  #     -o jsonpath='{.data.create-sandbox\.sh}' | sh
+  create-sandbox.sh: |-
+    #!/bin/sh
+    # Values-rendered — edit sandboxTemplate in values (deploy file), not this script.
+    set -eu
+    NAME="{{ .Values.sandboxTemplate.name }}"
+    GATEWAY="{{ .Values.sandboxTemplate.gateway }}"
+    NAMESPACE="{{ .Values.namespace }}"
+    KEY_ENV="{{ .Values.sandboxTemplate.keyEnv }}"
+    RELAY="{{ .Values.sandboxTemplate.relay }}"
+    BIN="{{ .Values.sandboxTemplate.sandboxBinaryPath }}"
+    RESTART="{{ .Values.sandboxTemplate.restartPolicy }}"
+    IMAGE="{{ $image }}"
+    POLICY="${POLICY:-deploy/policy/sandbox-opencode.yaml}"
+    # --detach: the p2p agent is a long-lived main process; do not attach.
+    # --env-from reads the key from THIS shell (exported below), not from argv.
+    export {{ .Values.sandboxTemplate.keyEnv }}="$(oc -n "$NAMESPACE" get secret sync-agent-master-key \
+      -o jsonpath='{.data.master-key}' | base64 -d)"
+    exec openshell sandbox create -g "$GATEWAY" --name "$NAME" --detach \
+      --from "$IMAGE" \
+      --policy "$POLICY" \
+      --env-from "$KEY_ENV" \
+      --restart-policy "$RESTART" \
+      -- "$BIN" p2p --relay "$RELAY" --sandbox-id "$NAME" --root /sandbox
+{{- end }}

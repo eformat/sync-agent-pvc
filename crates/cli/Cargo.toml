@@ -1,0 +1,53 @@
+[package]
+name = "sync-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Laptop side: sync/status/ping CLI over the sync-agent transport (M3); daemon + UI land in M4."
+
+[[bin]]
+name = "sync"
+path = "src/main.rs"
+
+[dependencies]
+sync-core = { workspace = true }
+sync-proto = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+blake3 = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# P2P transport: one-shot blocking bridge over a fresh current-thread runtime (M3).
+# The M4 daemon will own a long-lived runtime instead.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time", "macros", "sync", "io-util", "signal"] }
+futures = "0.3"
+libp2p = { version = "0.57", default-features = false, features = [
+    "tcp",
+    "tokio",
+    "noise",
+    "yamux",
+    "relay",
+    "dcutr",
+    "identify",
+    "macros",
+    "ed25519",
+] }
+# Official rust-libp2p crate for generic raw-stream protocols (open/accept a stream
+# on P2P_STREAM_PROTOCOL without a purpose-built behaviour). Alpha line — it is the
+# only supported way to do raw streams on libp2p 0.57/swarm 0.48; rust-version 1.88.
+libp2p-stream = "0.5.0-alpha"
+rust-embed = "8.13.0"
+toml = "1.2.0"
+notify = "8.2.1"
+axum = "0.8.9"
+tokio-stream = { version = "0.1.19", features = ["sync"] }
+mime_guess = "2.0.5"
+# M5 tunnel: futures-style libp2p Stream ↔ tokio TcpStream bridge (Compat) so
+# the daemon can tokio::io::copy_bidirectional the tunnel and the upstream.
+tokio-util = { version = "0.7", features = ["compat"] }
+
+[dev-dependencies]
+tempfile = "3"
+bincode = "1"
+# Diagnosing libp2p-internal failures (reservation denials are tracing-only
+# logs in libp2p-relay 0.22 — no client-side event exists).
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

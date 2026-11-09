@@ -1,0 +1,56 @@
+[package]
+name = "sync-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Remote sync agent: serves the PVC sync root over stdio (M2), p2p mode (M3)"
+
+[[bin]]
+name = "sync-agent"
+path = "src/main.rs"
+
+[dependencies]
+sync-core = { workspace = true }
+sync-proto = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1"
+blake3 = "1"
+libc = "0.2"
+
+# M3.5 sandbox-side MCP control plane (plan §3): loopback stdio server exposing
+# sync_status/pause/resume/resolve/now/ignore_add ONLY — never bulk file data.
+# default features = base64+macros+server (server pulls schemars for tool schemas);
+# transport-io = the STDIO transport (tokio io-std).
+rmcp = { version = "3.9", features = ["transport-io"] }
+# Direct dep required: the JsonSchema derive expands to `::schemars::` paths
+# (version pinned to rmcp's own schemars 1.x line).
+schemars = "1"
+
+# M3 p2p transport (plan §1): rust-libp2p tcp+noise+yamux+relay-v2+DCUtR, NO DHT —
+# the fixed VPS relay is the rendezvous (deterministic per-sandbox identities).
+# Raw duplex streams for the M2 protocol come from libp2p-stream; libp2p 0.57 does
+# NOT bundle it (no "stream" feature) — the 0.5.0-alpha crate is the 0.57-era
+# companion (targets libp2p-swarm 0.48, same as libp2p 0.57).
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync", "time"] }
+# io-util = SyncIoBridge (async stream -> std Read+Write for the serve loop);
+# compat = FuturesAsyncReadCompatExt (libp2p Stream is futures-style, SyncIoBridge wants tokio-style).
+tokio-util = { version = "0.7", features = ["io", "io-util", "compat"] }
+futures = "0.3"
+libp2p = { version = "0.57", features = [
+    "tcp", "tokio", "noise", "yamux", "relay", "dcutr", "identify", "macros", "ed25519",
+] }
+libp2p-stream = "0.5.0-alpha"
+
+[dev-dependencies]
+tempfile = "3"
+# In-memory client for the MCP roundtrip test (client feature = tokio-stream).
+rmcp = { version = "3.9", features = ["client"] }
+# Diagnosing libp2p-internal failures (reservation denials are tracing-only logs
+# in libp2p-relay 0.22 — no client-side event exists).
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# M2 NOTE: the serve loop itself is std-only by design — bincode over bounded
+# frames, a blocking dispatch over Read+Write (no tokio in serve.rs). The tokio +
+# libp2p deps above serve ONLY the p2p mode (M3): the libp2p stream is bridged to
+# a std duplex and handed to the verbatim serve loop.

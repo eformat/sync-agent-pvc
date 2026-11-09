@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/proto",
+    "crates/agent",
+    "crates/cli",
+    "crates/relay",
+]
+
+[workspace.package]
+version = "0.1.4"
+edition = "2021"
+license = "MIT"
+# libp2p 0.57 (relay/p2p transports) requires rustc >= 1.88.
+rust-version = "1.88"
+
+[workspace.dependencies]
+sync-core = { path = "crates/core" }
+sync-proto = { path = "crates/proto" }
+
+# Phase-gated deps (added as phases land):
+# M1: ignore, blake3, serde, bincode, globset
+# M2: ciborium, tokio
+# M3: rust-libp2p (tcp+noise+yamux+relay+dcutr — no DHT), tokio
+# M3.5: rmcp
+# M4: rust-embed, axum (or tiny_http), clap
+
+[profile.release]
+strip = true
+lto = true

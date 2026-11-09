@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sync-agent-pvc — Your Laptop Is the Durable Tier</title>
+<meta name="description" content="A bisync agent that keeps a laptop directory and an OpenShift PVC as two first-class disks — animated architecture flow story + talk deck.">
+<meta property="og:title" content="sync-agent-pvc — Your Laptop Is the Durable Tier">
+<meta property="og:description" content="Animated architecture flows (bisync, MCP control plane, provisioning, safety rails) and the 15-minute talk deck.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='18' fill='%230d1117'/%3E%3Ctext x='50' y='68' font-size='52' text-anchor='middle'%3E%F0%9F%A6%A9%3C/text%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel-2: #1a2332; --line: #30363d;
+    --text: #c9d1d9; --dim: #8b949e; --mute: #6e7681; --bright: #f0f6fc;
+    --accent: #58a6ff; --accent-soft: rgba(88,166,255,.12);
+    --green: #3fb950; --purple: #d2a8ff; --orange: #f0883e;
+    --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    --sans: "Archivo", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg); color: var(--text); font-family: var(--sans);
+    font-size: 16px; line-height: 1.55; min-height: 100vh;
+    background-image:
+      radial-gradient(ellipse 80% 50% at 50% -10%, rgba(88,166,255,.07), transparent),
+      radial-gradient(ellipse 50% 40% at 90% 110%, rgba(63,185,80,.05), transparent);
+  }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 24px; }
+
+  /* ---- top bar ---- */
+  .top { display: flex; align-items: center; justify-content: space-between; padding: 20px 0; }
+  .brand { font-family: var(--mono); font-size: 14px; color: var(--dim); text-decoration: none; letter-spacing: .02em; }
+  .brand strong { color: var(--text); font-weight: 600; }
+  .brand:hover strong { color: var(--accent); }
+  .topnav { display: flex; gap: 20px; align-items: center; }
+  .topnav a {
+    font-family: var(--mono); font-size: 13px; color: var(--dim); text-decoration: none;
+    padding: 6px 12px; border: 1px solid var(--line); border-radius: 8px; transition: .15s;
+  }
+  .topnav a:hover { color: var(--bright); border-color: var(--accent); background: var(--accent-soft); }
+
+  /* ---- hero ---- */
+  .hero { padding: 56px 0 40px; max-width: 760px; }
+  .kicker {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 14px;
+  }
+  h1 { font-size: clamp(30px, 5vw, 44px); line-height: 1.12; color: var(--bright); font-weight: 700; letter-spacing: -0.015em; }
+  h1 .u { color: var(--green); }
+  .hero p { margin-top: 16px; font-size: 17px; color: var(--dim); max-width: 640px; }
+  .hero p code { font-family: var(--mono); font-size: 14px; color: var(--purple); background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; }
+
+  /* ---- cards ---- */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px; padding: 8px 0 56px; }
+  .card {
+    display: flex; flex-direction: column; gap: 10px; text-decoration: none;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 26px 26px 22px;
+    transition: border-color .18s, transform .18s, background .18s;
+  }
+  .card:hover { border-color: var(--card-accent, var(--accent)); transform: translateY(-3px); background: var(--panel-2); }
+  .card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .card .icon { font-size: 22px; width: 44px; height: 44px; display: grid; place-items: center;
+    border-radius: 10px; background: var(--accent-soft); border: 1px solid var(--line); margin-bottom: 4px; }
+  .card h2 { font-size: 19px; color: var(--bright); font-weight: 650; letter-spacing: -0.01em; }
+  .card .sub { font-family: var(--mono); font-size: 12px; color: var(--card-accent, var(--accent)); letter-spacing: .04em; }
+  .card p { font-size: 14.5px; color: var(--dim); flex: 1; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .chip {
+    font-family: var(--mono); font-size: 11px; color: var(--dim); letter-spacing: .03em;
+    border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; background: rgba(13,17,23,.6);
+  }
+  .card-flow   { --card-accent: var(--accent); }
+  .card-flow .icon { background: rgba(88,166,255,.12); }
+  .card-deck   { --card-accent: var(--green); }
+  .card-deck .icon { background: rgba(63,185,80,.1); }
+
+  /* ---- footer ---- */
+  footer { border-top: 1px solid var(--line); padding: 26px 0 44px; }
+  .foot { display: flex; flex-wrap: wrap; gap: 12px 28px; justify-content: space-between; align-items: center; }
+  .foot, .foot a { font-family: var(--mono); font-size: 12.5px; color: var(--mute); text-decoration: none; }
+  .foot a { color: var(--dim); border-bottom: 1px dotted var(--mute); }
+  .foot a:hover { color: var(--accent); border-color: var(--accent); }
+
+  @media (max-width: 640px) {
+    .hero { padding: 40px 0 28px; }
+    .grid { grid-template-columns: 1fr; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+    html { scroll-behavior: auto; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <nav class="top">
+    <a class="brand" href="./">🦩 <strong>sync-agent-pvc</strong> / eformat</a>
+    <div class="topnav">
+      <a href="https://github.com/eformat/sync-agent-pvc" rel="noopener">source</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div class="kicker">Laptop ⇄ OpenShift PVC · bisync for agent workspaces</div>
+    <h1>Your Laptop Is the <span class="u">Durable Tier</span></h1>
+    <p>A Rust agent keeps <code>~/work</code> and a cluster PVC as two first-class disks —
+       3-way reconcile against a shared ancestor archive, an MCP control plane,
+       and safety rails that assume both sides diverge on purpose. Explore it two ways:</p>
+  </header>
+
+  <main class="grid">
+
+    <a class="card card-flow" href="flow-story.html" aria-label="Open the animated architecture flow story">
+      <div class="icon">▶</div>
+      <div class="sub">animated architecture · step through it</div>
+      <h2>The Flow Story</h2>
+      <p>The whole system as four animated flows: bisync reconcile (scan → 3-way merge →
+         StageFile/TransitionRun → convergence), the MCP control plane, sandbox provisioning,
+         and the safety rails — TOFU pinning, the root-match rail, and the 10k/50% delete guard.</p>
+      <div class="chips">
+        <span class="chip">4 flows</span><span class="chip">58 steps</span><span class="chip">~26 nodes</span><span class="chip">self-contained</span>
+      </div>
+    </a>
+
+    <a class="card card-deck" href="deck/deck.html" aria-label="Open the talk deck">
+      <div class="icon">🎞</div>
+      <div class="sub">the 15-minute talk · presenter mode + PDF</div>
+      <h2>The Talk Deck</h2>
+      <p>&ldquo;Your Laptop Is the Durable Tier&rdquo; — the gap (agents on the cluster, work on the
+         laptop), three rejected options, the inversion, the bisync engine, the transport ladder
+         (outbound dial → noise → DCUtR direct), and the self-managing agents.</p>
+      <div class="chips">
+        <span class="chip">18 live slides</span><span class="chip">6 backups</span><span class="chip">presenter mode</span><span class="chip">printable PDF</span>
+      </div>
+    </a>
+
+  </main>
+
+  <footer>
+    <div class="foot">
+      <span>Built with <a href="https://noyitz.github.io/flowstory/" rel="noopener">FlowStory</a> — AI-agent-first animated flow diagrams</span>
+      <span><a href="https://github.com/eformat/sync-agent-pvc" rel="noopener">github.com/eformat/sync-agent-pvc</a></span>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>

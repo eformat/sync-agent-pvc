@@ -1,0 +1,49 @@
+# Provider profile: Kubernetes API access for the sandbox agent.
+#
+# Design (2026-11-09, see ~/.opencode/plan/k8s-provider-stage1.md):
+#   - Endpoint is the IN-CLUSTER API service, full FQDN
+#     (kubernetes.default.svc.cluster.local:443), NOT api.<cluster>:6443 —
+#     SEC-005 / PR #548 blocks control-plane ports (6443/2379/2380/10250/10255)
+#     unconditionally at the supervisor proxy, even when allowed_ips matches.
+#     Port 443 + exact-declared host passes address validation, and the
+#     supervisor pod (the only sandbox-side pod with in-cluster egress) opens
+#     the upstream. NOTE the FQDN: the supervisor's trusted resolver queries
+#     names as-is (no resolv.conf search expansion), so the short
+#     `kubernetes.default.svc` form returns policy_dns_upstream_nxdomain —
+#     observed live 2026-11-09. The FQDN hits the cluster.local zone directly.
+#   - Credential is a BEARER TOKEN (env KUBE_TOKEN), never a kubeconfig file —
+#     the agent sees only an opaque placeholder
+#     (openshell:resolve:env:…); the supervisor's egress proxy swaps it for the
+#     real token just-in-time on requests to THIS endpoint and nowhere else
+#     (fail-closed credential_endpoint_mismatch elsewhere).
+#   - The sandbox kubeconfig (deploy/bootstrap/kubeconfig-provider.yaml) carries
+#     NO secret: server URL + an exec-credential plugin echoing $KUBE_TOKEN.
+#   - Stage 1 credential: the user's 24h OpenShift OAuth token (`oc whoami -t`) —
+#     natural expiry is the backstop. Stage 2: bounded per-step SA +
+#     TokenRequest rotation (see the plan file).
+#
+# Import flow: openshell provider profile lint -f <this> && … import -f <this> --global
+#   (import is create-only; use `openshell provider profile update` afterwards)
+
+id: kubernetes-api
+display_name: Kubernetes API
+description: Kubernetes/OpenShift API access via the in-cluster service
+category: other
+credentials:
+  - name: api_token
+    description: Kubernetes API bearer token
+    env_vars: [KUBE_TOKEN]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+discovery:
+  credentials: [api_token]
+endpoints:
+  - host: kubernetes.default.svc.cluster.local
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+binaries:
+  - path: /usr/local/bin/oc
+  - path: /usr/local/bin/kubectl

@@ -1,0 +1,54 @@
+# GitHub Pages: landing page (index.html) as the site root, linking to the
+# animated flow story (docs/flow-story.html -> /flow-story.html) and the talk
+# deck (deck/ -> /deck/deck.html). Live at https://eformat.github.io/sync-agent-pvc/
+# once pushed to main.
+name: pages-site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "index.html"
+      - "docs/flow-story.html"
+      - "docs/flow-story.json"
+      - "deck/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Stage the site — landing, flow story, deck
+        run: |
+          mkdir -p _site
+          cp index.html _site/index.html
+          cp docs/flow-story.html _site/flow-story.html
+          cp -r deck _site/deck
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

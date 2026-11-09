@@ -1,0 +1,23 @@
+{{/*
+Passthrough Route to the gateway service — mTLS terminates INSIDE the gateway pod
+(agent-ops guide step "Expose the gateway"). Host must match pkiInitJob.serverDnsNames
+or the CLI rejects the cert (guide troubleshooting: certificate validation error).
+*/}}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: openshell
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/part-of: sync-agent-pvc
+spec:
+  host: {{ .Values.routeHost | quote }}
+  to:
+    kind: Service
+    name: openshell
+    weight: 100
+  port:
+    targetPort: 8080
+  tls:
+    termination: passthrough
+    insecureEdgeTerminationPolicy: None

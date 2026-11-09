@@ -1,0 +1,33 @@
+# systemd --user unit for the sync-agent daemon (M4).
+#
+# Install (laptop):
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/linux/sync-agent.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now sync-agent
+# The unit expects the binary at ~/.local/bin/sync-agent and the config at
+# ~/.config/sync-agent-pvc/config.toml (see config.example.toml). The master
+# key is read from the config (0600 file) — no secrets in the unit.
+#
+# Lingering keeps the daemon alive after logout:
+#   loginctl enable-linger $USER
+
+[Unit]
+Description=sync-agent daemon: laptop <-> OpenShell sandbox sync (localhost UI/API)
+Documentation=https://localhost:7301/api/health
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/sync-agent daemon --config %h/.config/sync-agent-pvc/config.toml
+Restart=on-failure
+RestartSec=5
+# A pass over a large tree can take a while; never kill mid-pass for softness.
+TimeoutStopSec=30
+# Hardening: the daemon needs $HOME (sync roots, config, keys), the network,
+# and `oc` on PATH. Nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

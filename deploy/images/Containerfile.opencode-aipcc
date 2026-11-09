@@ -1,0 +1,148 @@
+# Derived OpenCode sandbox image for sync-agent-pvc (M0 (b), tool-closed M-? 2026-11-07).
+#
+# Base: quay.io/aipcc/base-images/agentic/opencode:2.2.5 (Red Hat AI, Hummingbird
+# base, opencode 2.2.5 native ELF at /usr/local/sbin/opencode, HOME=/sandbox baked
+# into the image ENV — workspace-as-home matches our sync design, plan §7).
+#
+# THE FIX (openclaw derived-image pattern, quay.io/eformat/openshell-openclaw:0.1.4):
+# the aipcc base ships /sandbox as 770 sandbox:root. The OpenShell workspace-init
+# (runtime `seed-workspace`) runs as the POD's SCC UID (e.g. 1001030000) and cannot
+# traverse the image's root-group dirs → `Permission denied (os error 13)` in
+# workspace-init, pod stuck Init:Error. chmod -R a+rX grants read+traverse to all
+# (capital X: exec only where already exec / dirs) — seed then copies the skel
+# (dotfiles, .agents, .config, .local, .venv) into the PVC.
+#
+# THE TOOL GAP (2026-11-07, sandbox-tool-gaps.md in the slides repo): the slides
+# reverse-engineering agent audited the image and found no
+# poppler/ImageMagick/jq/unzip/diffutils/python3 — and the sandbox has NO
+# network egress, so nothing can be installed at runtime. Everything is baked
+# in here.
+#
+# CHROME — DELIBERATELY REMOVED (2026-11-08, owner's call): the OpenShell
+# boundary's child-hardening seccomp filter (openshell-sandbox
+# child_seccomp.rs — unconditional at every workload spawn, no policy knob)
+# denies ptrace/close_range-family calls Chrome's child processes need, so
+# headless Chrome can NEVER run as the agent. Re-adding it costs ~450MB+X-libs
+# for a binary only usable boundary-free. Slides Verify/Export therefore run
+# on the LAPTOP (references/export.md). If a future OpenShell hardening-profile
+# opt-in lands, re-add: `google-chrome-stable google-noto-sans-fonts` to the
+# dnf list + restore deploy/images/google-chrome.repo (git history) + the /opt
+# and localhost-http chrome policy entries.
+#
+# HOW the tools install (the base ships NO package manager — no dnf/microdnf/rpm
+# binaries; rpmdb is sqlite at /usr/lib/sysimage/rpm, fedora-style, and glibc is
+# 2.43): a UBI9 helper stage resolves dependencies with `dnf --installroot`
+# against a copy of the sandbox rootfs, reading the REAL rpmdb (copied to
+# <root>/var/lib/rpm — el9 dnf's expected dbpath) and pulling from two repos:
+#   - public-hummingbird (already in the rootfs): python3, jq, unzip, diffutils,
+#     poppler-utils, curl
+#   - fedora 43 (deploy/images/fedora-tools.repo): ImageMagick, wget
+# Core packages are EXCLUDED so the base's glibc 2.43 stack is never clobbered;
+# gpgme2/gpgme2pp excluded (file-conflict with the installed hum1 gpgme — the
+# hum1 poppler needs hum1's gpgmepp, which pulls hum1's gpgme).
+#
+# Build + push (your quay):
+#   podman build -f deploy/images/Containerfile.opencode-aipcc \
+#     -t quay.io/eformat/openshell-opencode:2.2.6-tools deploy/images
+#   podman push quay.io/eformat/openshell-opencode:2.2.6-tools
+# Pin the sandbox BY DIGEST (podman inspect; mutable tag + node IfNotPresent
+# cache served a stale layer for the openclaw 0.1.2 image).
+#
+# 2.2.6-tools (2026-11-08) adds the cluster/ops toolbox — oc/kubectl (the agent
+# can script and control OpenShift; needs the openshift-api policy endpoint +
+# a kubeconfig upload, see deploy/policy/sandbox-opencode.yaml and the
+# kubeconfig-upload Makefile target) + helm/argocd/vault/kustomize/yq/uv/gh/
+# zip/bind-utils/httpd-tools — version pins mirror ~/git/web-terminal/Containerfile
+# for laptop/sandbox toolbox parity — and drops Chrome (see CHROME above).
+#
+# 2.2.7-tools (2026-11-09) adds the mcp-for-public-health deploy toolbox from
+# the sandbox agent's own gap analysis (TOOLING-GAP-ANALYSIS.md in that repo):
+# make + lsof (fedora RPMs, tiny) and mc/zed (static binaries). NOTES:
+#   - mc: the MinIO COMMUNITY client binaries are GONE (minio/mc archived
+#     2026-04, dl.min.io/client/mc → 410 Gone) — the only published binary is
+#     the AIStor client (dl.min.io/aistor/mc). It speaks standard S3 and works
+#     against the community MinIO the app deploys. 106MB.
+#   - zed: authzed/zed v1.2.1 linux-amd64 GNU variant. The musl variant is
+#     DYNAMICALLY linked against /lib/ld-musl-x86_64.so.1 (not static!) and
+#     cannot execute on the hummingbird glibc rootfs ("required file not
+#     found"); the gnu build needs only GLIBC_2.3.2.
+#   - podman is DELIBERATELY NOT ADDED: `make build/push` stays laptop-side —
+#     image builds need registry egress + push creds the sandbox must never
+#     have (no-egress principle), and the cluster nodes pull images themselves.
+#   - pip stays out (rootfs-clobber + no-egress, see 2.2.6); Python deps for
+#     the project flow in as a synced wheelhouse: laptop
+#     `pip download -r scripts/requirements.txt --only-binary=:all: \
+#      --python-version 3.14 --implementation cp -d wheelhouse/`,
+#     then in-sandbox `uv pip install --offline --find-links wheelhouse/`.
+
+FROM quay.io/aipcc/base-images/agentic/opencode:2.2.5 AS sandbox
+RUN chmod -R a+rX /sandbox
+
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest AS installer
+# tar/gzip/unzip are all MISSING from ubi9-minimal (verified 2026-11-08) and
+# the static-binary layers need all three; curl comes from the preinstalled
+# curl-minimal — installing the full `curl` RPM conflicts with it (ubi9
+# depsolve trap).
+RUN microdnf -y install dnf unzip tar gzip
+COPY --from=sandbox / /hb/
+COPY fedora-tools.repo /hb/etc/yum.repos.d/
+RUN mkdir -p /hb/var/lib/rpm && \
+    cp -a /hb/usr/lib/sysimage/rpm/. /hb/var/lib/rpm/ && \
+    dnf --installroot=/hb --releasever=43 --setopt=install_weak_deps=False \
+        --exclude=glibc*,filesystem,setup,basesystem,coreutils,systemd*,rpm*,gpgme2*,gpgme2pp* \
+        install -y python3 jq unzip diffutils poppler-utils curl wget \
+                   ImageMagick \
+                   zip iputils bind-utils httpd-tools gh \
+                   make lsof && \
+    cp -a /hb/var/lib/rpm/. /hb/usr/lib/sysimage/rpm/ && \
+    rm -rf /hb/var/lib/rpm && ln -s /usr/lib/sysimage/rpm /hb/var/lib/rpm && \
+    rm -rf /hb/var/cache/* /hb/var/log/* /tmp/* && \
+    rm /hb/etc/yum.repos.d/fedora-tools.repo
+
+# --- cluster/ops toolbox (2026-11-08) -----------------------------------------
+# Version pins mirror ~/git/web-terminal/Containerfile so the sandbox agent
+# scripts OpenShift with the same toolbox the laptop uses. ALL of these are
+# static single-file binaries baked at build time: the sandbox has NO runtime
+# egress, so a package manager in-pod (pip/npm/dnf) is a dead end — anything
+# the agent should have must land here.
+#
+# DELIBERATELY OMITTED vs web-terminal (WHY):
+#   - nodejs/npm/nodejs-nodemon: the base ships node 26.13.0; fedora's older
+#     nodejs RPM would clobber /usr/bin/node and drag in a second python.
+#   - python3-pip + ansible/uv-via-pip: pip can never fetch anything in-pod
+#     (no egress), and the fedora python3-* RPMs risk clobbering the
+#     hummingbird python 3.14 rootfs (the glibc-clobber class of failure).
+#     uv is included as the static single-binary that still works.
+#   - jq: already present (hummingbird).
+#   - net-tools: HARD-REQUIRES the full systemd RPM (depsolve conflict with
+#     the systemd* exclude — verified 2026-11-08), and it is redundant: the
+#     base already ships iproute2 (/usr/sbin/ss + /usr/sbin/ip).
+ENV OC_VERSION=4.22.22 \
+    ARGOCD_VERSION=3.6.1 \
+    HELM_VERSION=4.3.1 \
+    VAULT_VERSION=2.2.1 \
+    KUSTOMIZE_VERSION=5.8.3 \
+    YQ_VERSION=4.54.2 \
+    MC_VERSION=RELEASE.2026-09-19T15-24-59Z \
+    ZED_VERSION=1.2.1
+
+# pipefail: a curl'd 404 page piped into tar must fail the RUN, not bake
+# an HTML error page in place of a binary.
+RUN set -euo pipefail; \
+    cd /hb/usr/local/bin; \
+    curl -fsSL https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/${OC_VERSION}/openshift-client-linux.tar.gz | tar -xz -C .; \
+    rm -f README.md; \
+    curl -fsSL https://github.com/argoproj/argo-cd/releases/download/v${ARGOCD_VERSION}/argocd-linux-amd64 -o argocd; \
+    curl -fsSL https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz | tar -xz -C /tmp; \
+    mv /tmp/linux-amd64/helm helm; rm -rf /tmp/linux-amd64; \
+    curl -fsSL https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip -o /tmp/vault.zip; \
+    unzip -o /tmp/vault.zip -d . vault; rm -f /tmp/vault.zip; \
+    curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" | tar -xz -C . kustomize; \
+    curl -fsSL https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64 -o yq; \
+    curl -fsSL https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz | tar -xz --strip-components=1 -C . uv-x86_64-unknown-linux-gnu/uv uv-x86_64-unknown-linux-gnu/uvx; \
+    curl -fsSL https://dl.min.io/aistor/mc/release/linux-amd64/mc.${MC_VERSION} -o mc; \
+    curl -fsSL https://github.com/authzed/zed/releases/download/v${ZED_VERSION}/zed_${ZED_VERSION}_linux_amd64_gnu.tar.gz | tar -xz -C . zed; \
+    chmod 0755 oc kubectl argocd helm vault kustomize yq uv uvx mc zed
+
+FROM sandbox
+COPY --from=installer /hb/ /

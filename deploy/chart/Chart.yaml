@@ -1,0 +1,28 @@
+apiVersion: v2
+name: sync-agent-pvc
+description: >-
+  Cluster-side artifacts for sync-agent-pvc: OpenShell (agent sandbox) install, privileged-SCC
+  RoleBinding, passthrough Route, and (later phases) the sync sidecar wiring + egress policy.
+  Laptop daemon and the VPS relay are NOT part of this chart.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
+# Vendored subchart declaration: `helm lint` requires Chart.yaml to declare
+# every chart present under charts/ (pre-existing gap, caught at the M4 lint
+# gate). No `repository:` — the copy under charts/ IS the artifact; we never
+# fetch (ghcr anonymous OCI 403s, see above).
+dependencies:
+  - name: openshell
+    version: 0.1.2
+
+# Subchart: VENDORED copy of the OpenShell gateway chart 0.1.2 from
+# ~/git/rhoai-cluster-pool/applications/openshell/gateway-chart (itself the official
+# NVIDIA chart, Apache-2.0, name normalized to `openshell` for values mapping).
+#
+# Why vendored instead of `oci://ghcr.io/nvidia/openshell/helm-chart`: ghcr anonymous
+# OCI fetches return 403 from this network/ArgoCD (documented in COCO.md) — the
+# vendored-copy pattern is the established rhoai-cluster-pool convention. This copy is
+# PROVEN: deployed via ArgoCD/ACM on the coco + prelude spokes (non-kata).
+#
+# Deviations from the agent-ops guide (v0.0.116) are logged in docs/m0.0-runbook.md.

@@ -1,0 +1,30 @@
+{{/*
+Sandbox egress allowance for the sync P2P transport (§1/§9): the OpenShell
+`openshell-sandbox-workloads` NetworkPolicy is default-deny-egress; `openshell policy update`
+governs only the L7/Landlock layer for in-boundary processes — the k8s-layer egress for the
+sync sidecar is OUR chart's responsibility. Multiple NetworkPolicies union: this grants
+egress to the VPS relay without touching OpenShell's policy.
+*/}}
+{{- if .Values.vps.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sync-agent-sandbox-egress-vps
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/part-of: sync-agent-pvc
+spec:
+  podSelector:
+    {{- toYaml .Values.vps.podSelector | nindent 4 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.vps.cidr | quote }}
+      ports:
+        {{- range .Values.vps.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+{{- end }}

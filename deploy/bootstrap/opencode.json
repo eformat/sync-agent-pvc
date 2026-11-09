@@ -1,0 +1,37 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "openai/publishers/prelude-maas/models/glm-53-flash",
+  "provider": {
+    "openai": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://maas.apps.ocp.cloud.rhai-tmm.dev/v1"
+      },
+      "models": {
+        "publishers/prelude-maas/models/glm-53-flash": {
+          "name": "GLM 5.3 Flash (RHOAI MaaS)"
+        },
+        "publishers/prelude-maas/models/gemma4": {
+          "name": "Gemma 4 26B (RHOAI MaaS)"
+        }
+      }
+    }
+  },
+  "mcp": {
+    "sync-agent": {
+      "type": "local",
+      "command": [
+        "/sandbox/.sync-agent/agents/current/sync-agent",
+        "mcp",
+        "--root",
+        "/sandbox/.opencode/plan"
+      ],
+      "enabled": true
+    },
+    "memory": {
+      "type": "remote",
+      "url": "http://127.0.0.1:7402/mcp",
+      "enabled": true
+    }
+  }
+}

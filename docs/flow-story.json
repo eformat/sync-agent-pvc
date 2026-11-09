@@ -1,0 +1,575 @@
+{
+  "meta": {
+    "title": "sync-agent-pvc — $HOME ⇄ OpenShift PVC, animated",
+    "author": "eformat",
+    "branding": {
+      "title": "sync-agent-pvc"
+    }
+  },
+  "canvas": {
+    "width": 1250,
+    "height": 940
+  },
+  "nodes": {
+    "laptop": { "x": 30, "y": 60, "w": 480, "h": 770, "type": "boundary", "label": "Laptop — $HOME ⇄ daemon" },
+    "user": { "x": 45, "y": 85, "w": 160, "h": 55, "label": "User / OpenCode", "type": "icon" },
+    "home": { "x": 230, "y": 90, "w": 250, "h": 60, "label": "$HOME", "sublabel": "git repos · opencode config", "color": "#58a6ff", "fontSize": 18 },
+
+    "daemon": { "x": 55, "y": 185, "w": 430, "h": 350, "type": "container", "label": "sync daemon (crates/cli)", "color": "#58a6ff" },
+    "watch": { "x": 80, "y": 230, "w": 180, "h": 55, "label": "fsnotify watcher", "sublabel": "debounce 500 ms · re-scan 60 s", "color": "#79c0ff", "fontSize": 14, "inner": true },
+    "archive": { "x": 280, "y": 230, "w": 180, "h": 55, "label": "archive + cache", "sublabel": ".sync-agent baseline", "color": "#79c0ff", "fontSize": 14, "inner": true },
+    "driver": { "x": 80, "y": 305, "w": 380, "h": 60, "label": "bisync driver (crates/core)", "sublabel": "scan → 3-way reconcile → safety → apply", "color": "#58a6ff", "fontSize": 15, "inner": true },
+    "proto": { "x": 80, "y": 385, "w": 180, "h": 55, "label": "session framing", "sublabel": "MAGIC + ≤1 MiB CBOR frames", "color": "#8b949e", "fontSize": 14, "inner": true },
+    "transport": { "x": 280, "y": 385, "w": 180, "h": 55, "label": "transports", "sublabel": "p2p (libp2p) · oc-exec fallback", "color": "#8b949e", "fontSize": 14, "inner": true },
+
+    "apic": { "x": 55, "y": 565, "w": 430, "h": 140, "type": "container", "label": "localhost API + UI — 127.0.0.1:7301", "color": "#d2a8ff" },
+    "apihttp": { "x": 80, "y": 610, "w": 180, "h": 55, "label": "HTTP API", "sublabel": "targets · resolve · SSE events", "color": "#d2a8ff", "type": "plugin", "fontSize": 14, "inner": true },
+    "ui": { "x": 280, "y": 610, "w": 180, "h": 55, "label": "PatternFly UI", "sublabel": "rust-embed BFF", "color": "#d2a8ff", "type": "plugin", "fontSize": 14, "inner": true },
+
+    "masterkey": { "x": 80, "y": 745, "w": 195, "h": 60, "label": "master.key", "sublabel": "~/.config/sync-agent-pvc · 0600", "color": "#f0883e", "fontSize": 15 },
+    "config": { "x": 295, "y": 745, "w": 165, "h": 60, "label": "config.toml", "sublabel": "hot-reloaded targets", "color": "#8b949e", "fontSize": 15 },
+
+    "vps": { "x": 545, "y": 330, "w": 190, "h": 220, "type": "boundary", "label": "VPS" },
+    "relay": { "x": 560, "y": 390, "w": 160, "h": 100, "label": "sync-relay", "sublabel": "relay-v2 · DCUtR · :4001", "color": "#8b949e", "fontSize": 15 },
+
+    "cluster": { "x": 770, "y": 60, "w": 455, "h": 650, "type": "boundary", "label": "OpenShift cluster (ocp5-1)" },
+    "route": { "x": 795, "y": 90, "w": 190, "h": 60, "label": "OpenShell Route", "sublabel": "sandbox create · exec fallback", "color": "#8b949e", "fontSize": 14 },
+    "secret": { "x": 1005, "y": 90, "w": 195, "h": 60, "label": "k8s Secret", "sublabel": "master key → env var", "color": "#f0883e", "fontSize": 14 },
+
+    "sandbox": { "x": 795, "y": 180, "w": 405, "h": 385, "type": "container", "label": "OpenShell sandbox pod (AgentSandbox CR)", "color": "#d2a8ff" },
+    "agent": { "x": 820, "y": 230, "w": 165, "h": 70, "label": "sync-agent p2p", "sublabel": "main process · dials OUT", "color": "#58a6ff", "fontSize": 14 },
+    "mcp": { "x": 1010, "y": 230, "w": 165, "h": 70, "label": "sync-agent mcp", "sublabel": "stdio MCP · 6 tools", "color": "#d2a8ff", "fontSize": 14 },
+    "syncstate": { "x": 820, "y": 345, "w": 165, "h": 55, "label": "sync-state.json", "sublabel": "daemon-written report", "color": "#8b949e", "type": "plugin", "fontSize": 13, "inner": true },
+    "ctrlreq": { "x": 1010, "y": 345, "w": 165, "h": 55, "label": "control-requests.json", "sublabel": "agent-written asks", "color": "#8b949e", "type": "plugin", "fontSize": 12, "inner": true },
+    "pvcroot": { "x": 820, "y": 445, "w": 165, "h": 60, "label": "PVC root", "sublabel": "/sandbox/<project>", "color": "#3fb950", "fontSize": 15 },
+    "opencode": { "x": 1010, "y": 445, "w": 165, "h": 60, "label": "OpenCode agent", "sublabel": "reads its $HOME here", "color": "#79c0ff", "fontSize": 14 },
+
+    "pvc": { "x": 795, "y": 610, "w": 195, "h": 60, "label": "PersistentVolumeClaim", "sublabel": "outlives the pod", "color": "#3fb950", "fontSize": 13 },
+    "chart": { "x": 1010, "y": 610, "w": 190, "h": 60, "label": "deploy/chart (GitOps)", "sublabel": "Route · Secret · SCC · egress", "color": "#8b949e", "fontSize": 13 }
+  },
+  "tooltips": {
+    "home": {
+      "title": "$HOME — the sync source",
+      "description": "Everything the sandboxed agent needs for full local context. Config anchoring: ~/.config/opencode/** is always synced first-wave and path-verified after landing.",
+      "details": [
+        ["Syncs", "git repos, notes, ~/.config/opencode (anchored)"],
+        ["Excludes", "node_modules, target/ … via .syncignore (merged from both roots)"],
+        ["Secrets", "~/.local/share/opencode/auth.json excluded by default (opt-in + warning)"],
+        ["Never synced", ".sync-agent state dirs (scanner-skipped at any depth)"]
+      ],
+      "links": [
+        ["crates/core/src/scan.rs", "https://github.com/eformat/sync-agent-pvc/blob/main/crates/core/src/scan.rs"]
+      ]
+    },
+    "daemon": {
+      "title": "sync daemon (crates/cli)",
+      "description": "The laptop-side long-lived process. One plain std thread per configured target: fsnotify events (debounced) and a periodic safety re-scan trigger sync passes; each pass re-dials through the blocking transport bridge.",
+      "details": [
+        ["Config", "~/.config/sync-agent-pvc/config.toml — hot-reloaded, no restart"],
+        ["Triggers", "fsnotify burst (500 ms debounce) · 60 s safety re-scan · sync_now"],
+        ["Resolutions", "UI resolves go into local_resolutions for the next pass"],
+        ["Ownership", "the laptop owns the data plane (remote_driver semantics)"]
+      ],
+      "links": [
+        ["crates/cli/src/daemon.rs", "https://github.com/eformat/sync-agent-pvc/blob/main/crates/cli/src/daemon.rs"]
+      ]
+    },
+    "watch": {
+      "title": "fsnotify watcher",
+      "description": "Recursive watcher over the target root. Event bursts settle for debounce_ms before a pass; a periodic re-scan catches anything the events missed."
+    },
+    "archive": {
+      "title": "archive + caches (vendored copia)",
+      "description": "The 3-way ancestor lives in a single archive file per pair (key = sandbox:root_remote). Atomic temp+fsync+rename, version-checked. Missing/corrupt/foreign ⇒ safe no-base: deletes can never be produced without a trusted base.",
+      "details": [
+        ["Pair key", "sandbox : root_remote — re-pointing a root yields a FRESH archive"],
+        ["Why it matters", "a stale base once planned a mass laptop deletion (B looked like it deleted everything)"],
+        ["Write rule", "archive saved ONLY on full success + post-apply convergence"]
+      ],
+      "links": [
+        ["crates/core/src/archive.rs", "https://github.com/eformat/sync-agent-pvc/blob/main/crates/core/src/archive.rs"]
+      ]
+    },
+    "driver": {
+      "title": "bisync driver (crates/core)",
+      "description": "scan → 3-way reconcile → safety → apply → archive, wiring the six engine modules. v1 policy: TwoWaySafe + newest-wins-with-conflict-copy.",
+      "details": [
+        ["Reconcile", "vendored copia 3-way table (reconcile.rs, MIT-attributed; Kani/Lean-proved upstream)"],
+        ["Conflicts", "file-vs-file newest-wins by cached mtime; loser copied to <name>.sync-conflict-<epoch>-<side> on BOTH roots; dir/symlink/opaque ⇒ left untouched + reported"],
+        ["Safety", "check_safety on the MERGED plan: >10k files or >50% of tree ⇒ halt — zero mutation, zero conflict copies"],
+        ["Apply", "removals first, then materializations; symlink-aware, mode-bits only (never uid/gid)"]
+      ],
+      "links": [
+        ["crates/core/src/driver.rs", "https://github.com/eformat/sync-agent-pvc/blob/main/crates/core/src/driver.rs"]
+      ]
+    },
+    "proto": {
+      "title": "sync-proto — wire framing",
+      "description": "Handshake first so exec-transport banner noise fails loudly instead of corrupting frames. Frames are u32 BE length prefix + opaque body; bulk file content streams as raw bytes after the frame header, never inline.",
+      "details": [
+        ["Magic", "server \"SYN1\"+0x01 ⇄ client 0x01+\"1NYS\" (reversed sentinel)"],
+        ["Version", "u32 BE major/minor, exact match in v1 (drift ⇒ re-inject agent)"],
+        ["Frame cap", "MAX_FRAME = 1 MiB — anything bigger is a protocol error"],
+        ["Scan exchange", "CacheChunk* → Scan → ScanBegin → ScanChunk* → CacheChunk* → ScanDone"]
+      ],
+      "links": [
+        ["crates/proto/src/lib.rs", "https://github.com/eformat/sync-agent-pvc/blob/main/crates/proto/src/lib.rs"]
+      ]
+    },
+    "transport": {
+      "title": "transports (plan §1 ladder)",
+      "description": "P2p (primary): libp2p stream over the VPS relay — the agent's PeerId is deterministically derived from (master key, sandbox_id), so the daemon dials <relay>/p2p-circuit/p2p/<agent-peer> with no DHT. OcExec (bootstrap/fallback): oc exec stdio, binary-safe non-tty, with agent auto-injection.",
+      "details": [
+        ["Ladder", "circuit boots the session → bounded DCUtR punch window → direct wins + circuit closed; 'staying relayed' on failure"],
+        ["Trust", "daemon TOFU-pins the agent PeerId per sandbox and refuses a mismatch"],
+        ["Path badge", "direct vs relayed surfaced in the UI snapshot"],
+        ["Exec", "probe = full handshake; stale/missing agent is re-uploaded + installed"],
+        ["CoCo note", "kata policy blocks exec into CoCo pods — hence dial-OUT p2p as the real path"]
+      ],
+      "links": [
+        ["crates/cli/src/transport.rs", "https://github.com/eformat/sync-agent-pvc/blob/main/crates/cli/src/transport.rs"]
+      ]
+    },
+    "apihttp": {
+      "title": "localhost HTTP API",
+      "description": "Loopback-only (the daemon refuses any non-loopback bind — there is no auth on this surface). The daemon is the BFF: it holds the cluster credential and the P2P transports.",
+      "details": [
+        ["Targets", "GET/POST /api/targets · GET/DELETE /api/targets/{name}"],
+        ["Controls", "resolve · pause · resume · sync-now · dry-run · excludes"],
+        ["Live", "GET /api/events (SSE) · /api/fs browser · /api/health"]
+      ],
+      "links": [
+        ["crates/cli/src/api.rs", "https://github.com/eformat/sync-agent-pvc/blob/main/crates/cli/src/api.rs"]
+      ]
+    },
+    "ui": {
+      "title": "PatternFly UI",
+      "description": "Standalone PatternFly app embedded in the daemon binary via rust-embed (assets from crates/cli/ui/dist). Reuses AgentStore patterns: listing YAML, engine client shape, graceful degradation.",
+      "details": [
+        ["Attach", "wizard derives root_remote=/sandbox/<name> + qualified sandbox id"],
+        ["Edit", "excludes editor rewrites config.toml (comments NOT preserved)"],
+        ["Watch", "target snapshot, conflicts, halts, auto-provision notes"]
+      ]
+    },
+    "masterkey": {
+      "title": "master.key",
+      "description": "Per-sandbox master key — the same value the sandbox holds. 0600 file under ~/.config/sync-agent-pvc/ (or 64-hex env). Identity is derived from (master key, sandbox-id), so this one key powers every target while each gets its own peer identity.",
+      "details": [
+        ["Laptop", "master_key_file or master_key_env in config.toml"],
+        ["Cluster", "chart Secret rendered at deploy time (never committed) → env SYNC_AGENT_MASTER_KEY"]
+      ]
+    },
+    "config": {
+      "title": "config.toml",
+      "description": "Daemon config: [server] bind, [defaults] (relay, interval, debounce, master key, auto_provision), [[targets]] (name, sandbox, root, root_remote, excludes). Hot-reloaded: add/edit/remove targets without a restart."
+    },
+    "vps": {
+      "title": "VPS — relay node",
+      "description": "A deliberately DUMB rendezvous: standard libp2p relay-v2 (circuit reservations + circuits) plus DCUtR hole-punch help. It holds no peer keys, keeps no per-sandbox state, and only ever sees noise-encrypted traffic. The fixed VPS IS the rendezvous — no DHT, no rendezvous protocol.",
+      "details": [
+        ["Stack", "tcp + noise + yamux + relay(SERVER) + dcutr + identify"],
+        ["Identity", "ed25519 keypair at /var/lib/sync-agent-relay/identity.ed25519 — PeerId is load-bearing"],
+        ["Deploy", "single static musl binary; stdout prints exactly one line: the PeerId"],
+        ["Replaced", "the borrowed Go p2p-claude-plans --bootstrap-mode unit"]
+      ],
+      "links": [
+        ["crates/relay/src/main.rs", "https://github.com/eformat/sync-agent-pvc/blob/main/crates/relay/src/main.rs"]
+      ]
+    },
+    "relay": {
+      "title": "sync-relay (tcp/4001)",
+      "description": "Rendezvous + FALLBACK only — never the steady-state data path. Each pass boots the session on the noise-encrypted relayed circuit, then DCUtR punches a DIRECT laptop⇄agent connection; when it lands the circuit is torn down and the sync stream runs direct. Punch window is bounded; on failure the session logs 'staying relayed' and keeps using the circuit.",
+      "details": [
+        ["Bootstrap", "daemon dials <relay>/p2p-circuit/p2p/<agent-peer>"],
+        ["Upgrade", "DCUtR simultaneous connect → direct TCP, circuit closed"],
+        ["Fallback", "punch failed / window elapsed ⇒ data keeps riding the circuit"],
+        ["Badge", "last_path() = direct | relayed, surfaced in the UI"]
+      ]
+    },
+    "cluster": {
+      "title": "OpenShift cluster (ocp5-1)",
+      "description": "The Red Hat build of Agent Sandbox operator (v0.9.0) + OpenShell. One Helm chart (deploy/chart) renders the cluster-side artifacts via GitOps; images build in-cluster via BuildConfig/S2I and promote to quay.io/eformat."
+    },
+    "route": {
+      "title": "OpenShell Route",
+      "description": "The authenticated edge for sandbox lifecycle (create with --env-from, logs) and the exec fallback transport. Real sync traffic does NOT ride here — it is pure TCP libp2p to the VPS relay, which is why p2p targets never need cluster credentials.",
+      "details": [
+        ["Auth", "OIDC via the OpenShell CLI"],
+        ["Egress", "the agent dials VPS:4001 — NetworkPolicy sandbox-egress-vps.yaml allows it"]
+      ]
+    },
+    "secret": {
+      "title": "k8s Secret — master key",
+      "description": "deploy/chart renders the Secret from --set at deploy time (the value is never committed). The sandbox consumes it as an environment variable.",
+      "details": [
+        ["Why env, not a mount", "the k8s driver's per-sandbox schema accepts PVC-only volumes — no secret/configmap volumes"],
+        ["Delivery", "openshell sandbox create --env-from SYNC_AGENT_MASTER_KEY"],
+        ["Accepted exposure", "key readable in the Sandbox CR env map (v1 spike-status exception, §9)"]
+      ],
+      "links": [
+        ["sync-agent-master-key-secret.yaml", "https://github.com/eformat/sync-agent-pvc/blob/main/deploy/chart/templates/sync-agent-master-key-secret.yaml"]
+      ]
+    },
+    "sandbox": {
+      "title": "OpenShell sandbox pod",
+      "description": "An AgentSandbox CR (kubernetes-sigs/agent-sandbox) backed by a PVC — never emptyDir. sync-agent p2p is the sandbox's MAIN PROCESS (not a sidecar): the chart sets the main-process spec, the supervisor spawns it, and its lifetime = sandbox lifetime (keeps phase Ready).",
+      "details": [
+        ["Main process", "annotation → OPENSHELL_MAIN_PROCESS_SPEC env → supervisor spawns"],
+        ["OPA regime", "as a supervisor-spawned process it sits INSIDE the sandbox identity/policy regime"],
+        ["UID model", "sync agent + sandbox agent share pod UID; mode bits only, umask 0644/0755, exec-bit propagation"]
+      ],
+      "links": [
+        ["docs/m4-workload-template.md", "https://github.com/eformat/sync-agent-pvc/blob/main/docs/m4-workload-template.md"]
+      ]
+    },
+    "agent": {
+      "title": "sync-agent p2p (in sandbox)",
+      "description": "The remote half. Dials OUT to the VPS relay and serves the PVC sync root over relayed/direct libp2p streams. Binds --root at startup — the root-match rail means P2P can never repoint it remotely.",
+      "details": [
+        ["Identity", "PeerId = derive(master.key, sandbox-id) — TOFU-pinned daemon-side"],
+        ["Modes", "serve (stdio) · install (versioned binary + GC) · p2p (daemon) · mcp"],
+        ["Binary", "<root>/.sync-agent/agents/<version>/sync-agent (mutagen install.go pattern)"],
+        ["Hello", "reports root, UID/GID + root perms — feeds status/UI diagnostics"],
+        ["Stdout", "is the protocol channel on exec transports; logs go to stderr"]
+      ],
+      "links": [
+        ["crates/agent/src/p2p.rs", "https://github.com/eformat/sync-agent-pvc/blob/main/crates/agent/src/p2p.rs"]
+      ]
+    },
+    "mcp": {
+      "title": "sync-agent mcp (M3.5)",
+      "description": "Sandbox-side control-plane MCP server on stdio (rmcp 3.9), injected into OpenCode via the mcpServers block. MCP is the CONTROL plane only — never bulk data.",
+      "details": [
+        ["Tools", "sync_status · sync_pause · sync_resume · sync_resolve_conflict · sync_now · sync_ignore_add"],
+        ["Reads", ".sync-agent/sync-state.json (the daemon's last report)"],
+        ["Writes", ".sync-agent/control-requests.json (consumed by the daemon's next pass)"],
+        ["Errors", "isError text the caller can read — never a thrown McpError for validation"]
+      ],
+      "links": [
+        ["crates/agent/src/mcp_mode.rs", "https://github.com/eformat/sync-agent-pvc/blob/main/crates/agent/src/mcp_mode.rs"]
+      ]
+    },
+    "syncstate": {
+      "title": ".sync-agent/sync-state.json",
+      "description": "Daemon-written per-sandbox sync state — the source sync_status reads. Lives in the scanner-skipped .sync-agent dir, so control state never enters the sync set.",
+      "details": [
+        ["Fields", "last_sync_unix · paused · conflicts[] · applied/deleted/failed · problems[] · daemon_version"],
+        ["Written", "after every pass via Request::SyncReport (temp + fsync + rename)"]
+      ],
+      "links": [
+        ["crates/proto/src/control.rs", "https://github.com/eformat/sync-agent-pvc/blob/main/crates/proto/src/control.rs"]
+      ]
+    },
+    "ctrlreq": {
+      "title": ".sync-agent/control-requests.json",
+      "description": "Agent-written asks, fetched and cleared by the daemon's next sync pass. Fetch-and-clear is atomic on the agent side; unhonorable requests (e.g. a resolve for a path that no longer conflicts) are consumed and REPORTED as stale — no silent loops, no restore churn.",
+      "details": [
+        ["paused", "stop syncing entirely until resume"],
+        ["resolutions", "keep-local | keep-remote per path (winner propagates, loser dropped)"],
+        ["ignore_add", "patterns appended to the laptop's .syncignore (persistent)"],
+        ["sync_now", "nudge the daemon loop"]
+      ],
+      "links": [
+        ["crates/proto/src/control.rs", "https://github.com/eformat/sync-agent-pvc/blob/main/crates/proto/src/control.rs"]
+      ]
+    },
+    "pvcroot": {
+      "title": "PVC root — /sandbox/<project>",
+      "description": "Subpath policy ('subpaths always'): targets default to root_remote=/sandbox/<name> so the repo structure stays visible in the sandbox and multi-target root collisions are structurally impossible. The /sandbox top level holds only home infra + .sync-agent + project subdirs.",
+      "details": [
+        ["Pair key", "archive identity = sandbox : root_remote (re-point ⇒ fresh no-base archive)"],
+        ["Root rail", "agent binds its root at startup; hello.root ≠ root_remote ⇒ hard error"],
+        ["Multi-project", "qualified ids 'sync-oc+<project>' — own peer/pin/archive, shared master.key"]
+      ],
+      "links": [
+        ["deploy/linux/config.example.toml", "https://github.com/eformat/sync-agent-pvc/blob/main/deploy/linux/config.example.toml"]
+      ]
+    },
+    "opencode": {
+      "title": "OpenCode agent (in sandbox)",
+      "description": "The consumer of all of this: a coding agent running in the sandbox with its full $HOME context synced from the laptop. It self-serves sync state and conflict resolution through the injected MCP tools.",
+      "details": [
+        ["v1 scope", "OpenCode-only harness: one catalog listing, opencode.json-format MCP injection"],
+        ["Config", "opencode.json baked into the derived image / seeded via workspace-init"],
+        ["Later harnesses", "the resolver/listing schema is generic"]
+      ]
+    },
+    "pvc": {
+      "title": "PersistentVolumeClaim",
+      "description": "The durable half of the pair: /sandbox IS the PVC, so synced state survives pod restarts and sandbox recycling. RWO, mounted into the sandbox workspace."
+    },
+    "chart": {
+      "title": "deploy/chart (GitOps)",
+      "description": "ONE Helm chart for all cluster-side artifacts. Declares its vendored openshell subchart (lint-clean), and renders the master-key Secret + sandbox config at deploy time — secret values never land in git.",
+      "details": [
+        ["Objects", "namespace · SCC RoleBinding · Route · egress NetworkPolicy · master-key Secret · sandbox config"],
+        ["Images", "BuildConfig/S2I binary builds from the laptop; digest-pinned after quay promotion"],
+        ["Sandbox config", "opencode.json + create-sandbox.sh via ConfigMap (M4)"]
+      ],
+      "links": [
+        ["deploy/chart", "https://github.com/eformat/sync-agent-pvc/tree/main/deploy/chart"]
+      ]
+    }
+  },
+  "flows": {
+    "bisync": {
+      "label": "Sync Pass (daemon loop)",
+      "steps": [
+        { "text": "1. User edits files in $HOME", "mode": "arrow", "from": "user", "to": "home", "color": "#58a6ff", "num": 1, "fromRight": true, "toLeft": true },
+        { "text": "2. fsnotify event → watcher (debounce 500 ms)", "mode": "arrow", "from": "home", "to": "watch", "color": "#58a6ff", "num": 2, "fromBottom": true, "fromXOff": -60, "toTop": true, "toXOff": 40 },
+        { "text": "3. bisync pass: load pair archive — corrupt/missing ⇒ safe no-base (no deletes)", "mode": "lightup", "target": "driver", "badge": 3 },
+        { "text": "4. ancestor + caches load from .sync-agent state", "mode": "lightup", "target": "archive", "badge": 4 },
+        { "text": "5. bootstrap dial: <relay>/p2p-circuit/p2p/<agent-peer>", "mode": "arrow", "from": "transport", "to": "relay", "color": "#58a6ff", "num": 5, "fromRight": true, "toLeft": true, "yOff": -10 },
+        { "text": "6. noise-encrypted circuit — the session's first bytes (relay sees ciphertext only)", "mode": "arrow", "from": "relay", "to": "agent", "color": "#58a6ff", "num": 6, "fromRight": true, "fromXOff": -30, "toLeft": true, "glow": "sandbox" },
+        { "text": "7. DCUtR punch lands → DIRECT laptop⇄agent path; circuit torn down (fallback: stays relayed)", "mode": "arrow", "from": "transport", "to": "agent", "color": "#58a6ff", "num": 7, "fromRight": true, "toLeft": true, "waypoints": [{ "x": 640, "y": 300 }] },
+        { "text": "8. TOFU pin: PeerId = derive(master.key, sandbox-id) must match the pin", "mode": "lightup", "target": "agent", "badge": 8 },
+        { "text": "9. MAGIC handshake + version 0.1 + Hello (root, UID/GID facts)", "mode": "lightup", "target": "proto", "badge": 9 },
+        { "text": "10. Scan: merge .syncignore (both roots) → quick-check warm path → FlatTree chunks", "mode": "lightup", "target": "driver", "badge": 10 },
+        { "text": "11. 3-way reconcile vs the ancestor — TwoWaySafe table (vendored copia cores)", "mode": "lightup", "target": "driver", "badge": 11 },
+        { "text": "12. conflicts: file-vs-file newest-wins + .sync-conflict copies; dir/symlink ⇒ untouched", "mode": "lightup", "target": "driver", "badge": 12 },
+        { "text": "13. check_safety on the merged plan (10k-file / 50% delete guard)", "mode": "lightup", "target": "driver", "badge": 13 },
+        { "text": "14. StageFile: raw payload bytes ride the DIRECT stream (digest-gated)", "mode": "arrow", "from": "transport", "to": "agent", "color": "#3fb950", "num": 14, "fromRight": true, "toLeft": true, "waypoints": [{ "x": 640, "y": 282 }] },
+        { "text": "15. TransitionRun: removals, then materializations", "mode": "lightup", "target": "agent", "badge": 15 },
+        { "text": "16. changes land atomically on /sandbox/<project> (PVC-backed)", "mode": "lightup", "target": "pvcroot", "badge": 16 },
+        { "text": "17. post-apply re-scan must prove both roots converged", "mode": "lightup", "target": "agent", "badge": 17 },
+        { "text": "18. archive re-saved ONLY on full success (next run sees our own writes)", "mode": "lightup", "target": "archive", "badge": 18 },
+        { "text": "19. SyncReport: the daemon pushes the run's state to the agent", "mode": "lightup", "target": "agent", "badge": 19 },
+        { "text": "20. agent persists sync-state.json (temp + fsync + rename)", "mode": "arrow", "from": "agent", "to": "syncstate", "color": "#3fb950", "num": 20, "fromBottom": true, "toTop": true },
+        { "text": "21. HTTP API streams the new snapshot over SSE", "mode": "arrow", "from": "apihttp", "to": "ui", "color": "#d2a8ff", "num": 21, "fromRight": true, "toLeft": true },
+        { "text": "22. User sees the pass land in the dashboard", "mode": "lightup", "target": "user", "badge": 22 }
+      ]
+    },
+    "mcp": {
+      "label": "Sandbox MCP Control Plane",
+      "steps": [
+        { "text": "1. OpenCode calls sync_status (rmcp 3.9 stdio JSON-RPC)", "mode": "arrow", "from": "opencode", "to": "mcp", "color": "#d2a8ff", "num": 1, "fromRight": true, "toRight": true, "waypoints": [{ "x": 1192, "y": 375 }] },
+        { "text": "2. MCP server reads .sync-agent/sync-state.json (never part of the sync set)", "mode": "arrow", "from": "mcp", "to": "syncstate", "color": "#d2a8ff", "num": 2, "fromBottom": true, "fromXOff": -60, "toTop": true, "toXOff": 60 },
+        { "text": "3. status back: summary + compact JSON (last sync, conflicts, pending)", "mode": "arrow", "from": "mcp", "to": "opencode", "color": "#3fb950", "num": 3, "fromRight": true, "yOff": 20, "toRight": true, "waypoints": [{ "x": 1196, "y": 375 }] },
+        { "text": "4. OpenCode calls sync_resolve_conflict(path, keep-local | keep-remote)", "mode": "lightup", "target": "mcp", "badge": 4 },
+        { "text": "5. validate: the path must be a LIVE conflict (else error lists the set)", "mode": "lightup", "target": "mcp", "badge": 5 },
+        { "text": "6. control-requests.json written (temp + fsync + rename)", "mode": "arrow", "from": "mcp", "to": "ctrlreq", "color": "#d2a8ff", "num": 6, "fromBottom": true, "toTop": true },
+        { "text": "7. next daemon pass re-dials — same ladder: relay rendezvous → DCUtR punch", "mode": "lightup", "target": "transport", "badge": 7 },
+        { "text": "8. ControlFetch{consume} rides the DIRECT session — fetch-and-clear atomic (relay = fallback)", "mode": "arrow", "from": "transport", "to": "agent", "color": "#58a6ff", "num": 8, "fromRight": true, "toLeft": true, "waypoints": [{ "x": 640, "y": 282 }] },
+        { "text": "9. pending requests return with the session", "mode": "arrow", "from": "ctrlreq", "to": "agent", "color": "#3fb950", "num": 9, "fromTop": true, "fromXOff": -40, "toRight": true, "yOff": 20 },
+        { "text": "10. honored: resolutions → plan · ignore_add → .syncignore · pause → skip · sync_now → run", "mode": "lightup", "target": "driver", "badge": 10 },
+        { "text": "11. SyncReport: what was honored lands in sync-state.json", "mode": "lightup", "target": "agent", "badge": 11 },
+        { "text": "12. agent persists the updated state", "mode": "arrow", "from": "agent", "to": "syncstate", "color": "#3fb950", "num": 12, "fromBottom": true, "fromXOff": 60, "toTop": true, "toXOff": 60 },
+        { "text": "13. next sync_status reflects the outcome — stale requests are reported, never looped", "mode": "lightup", "target": "opencode", "badge": 13 }
+      ]
+    },
+    "provision": {
+      "label": "Auto-Provision a New Target",
+      "steps": [
+        { "text": "1. attach a target (wizard or POST /api/targets)", "mode": "arrow", "from": "ui", "to": "apihttp", "color": "#d2a8ff", "num": 1, "fromLeft": true, "toRight": true },
+        { "text": "2. derive root_remote=/sandbox/<name> + qualified id <sandbox>+<name>", "mode": "lightup", "target": "apihttp", "badge": 2 },
+        { "text": "3. first pass dials: no agent serves that root ⇒ root-mismatch (never synced)", "mode": "lightup", "target": "driver", "badge": 3 },
+        { "text": "4. auto_provision + never-synced ⇒ provision via the exec fallback", "mode": "lightup", "target": "driver", "badge": 4 },
+        { "text": "5. exec fallback spawns in the pod (explicit kubeconfig required!)", "mode": "arrow", "from": "transport", "to": "route", "color": "#f0883e", "num": 5, "fromRight": true, "toLeft": true, "waypoints": [{ "x": 640, "y": 210 }] },
+        { "text": "6. mkdir /sandbox/<name>; reuse binary .sync-agent/agents/<ver> (sort -V)", "mode": "lightup", "target": "pvcroot", "badge": 6 },
+        { "text": "7. spawn: sync-agent p2p --root /sandbox/<name>", "mode": "arrow", "from": "route", "to": "agent", "color": "#f0883e", "num": 7, "fromBottom": true, "fromXOff": 12, "toTop": true },
+        { "text": "8. qualified id <sandbox>+<name> + shared master.key ⇒ identity = (key, id)", "mode": "lightup", "target": "agent", "badge": 8 },
+        { "text": "9. re-dial ×3 / 4 s through the relay", "mode": "arrow", "from": "transport", "to": "relay", "color": "#58a6ff", "num": 9, "fromRight": true, "toLeft": true, "yOff": -10 },
+        { "text": "10. same (key, id) ⇒ same PeerId ⇒ same TOFU pin", "mode": "arrow", "from": "relay", "to": "agent", "color": "#58a6ff", "num": 10, "fromRight": true, "fromXOff": 30, "toLeft": true, "glow": "sandbox" },
+        { "text": "11. root-match rail: hello.root must equal root_remote (else hard error)", "mode": "lightup", "target": "driver", "badge": 11 },
+        { "text": "12. first bisync converges into the new root", "mode": "arrow", "from": "agent", "to": "pvcroot", "color": "#3fb950", "num": 12, "fromRight": true, "toTop": true, "toXOff": 75, "waypoints": [{ "x": 997, "y": 425 }] },
+        { "text": "13. config.toml qualified + persisted; UI notes the spawned agent", "mode": "lightup", "target": "apihttp", "badge": 13 }
+      ]
+    },
+    "safety": {
+      "label": "Safety Rails (when sync refuses)",
+      "steps": [
+        { "text": "1. a pass dials the agent as usual", "mode": "arrow", "from": "transport", "to": "relay", "color": "#58a6ff", "num": 1, "fromRight": true, "toLeft": true, "yOff": -10 },
+        { "text": "2. handshake answers — but is it OUR agent?", "mode": "arrow", "from": "relay", "to": "agent", "color": "#58a6ff", "num": 2, "fromRight": true, "fromXOff": -30, "toLeft": true },
+        { "text": "3. RAIL 1 — TOFU pin: PeerId ≠ pin (impostor or key rotation) ⇒ session refused", "mode": "lightup", "target": "agent", "badge": "✗", "errColor": "#f85149" },
+        { "text": "4. identity = derive(master.key, sandbox-id) — a key rotation trips the pin too", "mode": "lightup", "target": "masterkey", "badge": 4 },
+        { "text": "5. RAIL 2 — Hello reports the root the agent bound at startup", "mode": "lightup", "target": "proto", "badge": 5 },
+        { "text": "6. root-match rail: hello.root ≠ root_remote ⇒ hard error — P2P can never repoint a root remotely", "mode": "lightup", "target": "driver", "badge": "✗", "errColor": "#f85149" },
+        { "text": "7. RAIL 3 — reconcile plans the next mutation set", "mode": "lightup", "target": "driver", "badge": 7 },
+        { "text": "8. delete guard: >10k files or >50% of the tree ⇒ HALT (zero mutation, zero copies)", "mode": "lightup", "target": "driver", "badge": "✗", "errColor": "#f85149" },
+        { "text": "9. re-pointed root ⇒ fresh no-base archive: deletes suppressed until trust is rebuilt", "mode": "lightup", "target": "archive", "badge": 9 },
+        { "text": "10. every halt lands in the run report + UI", "mode": "arrow", "from": "apihttp", "to": "ui", "color": "#f85149", "num": 10, "fromRight": true, "toLeft": true },
+        { "text": "11. loud diagnostics: pin mismatch, root facts, remote UID, halt reason", "mode": "lightup", "target": "ui", "badge": 11 }
+      ]
+    }
+  },
+  "inspector": {
+    "initialState": {
+      "phase": "request",
+      "label": "Session open — handshake + Hello",
+      "headers": [
+        { "value": "SYN1·01 ⇄ 01·1NYS   MAGIC handshake", "style": "keep", "id": "h-magic" },
+        { "value": "version 0.1 (exact match; drift ⇒ re-inject agent)", "style": "keep", "id": "h-ver" },
+        { "value": "Hello { root, uid, gid, agent_version }", "style": "keep", "id": "h-hello" }
+      ],
+      "body": [
+        { "value": "// .sync-agent/sync-state.json", "style": "keep", "id": "b-cmt" },
+        { "value": "\"last_sync_unix\": 0,        // never ran", "style": "keep", "id": "b-last" },
+        { "value": "\"paused\": false,", "style": "keep", "id": "b-paused" },
+        { "value": "\"applied\": 0, \"deleted\": 0, \"failed\": 0,", "style": "keep", "id": "b-counters" },
+        { "value": "\"conflicts\": [], \"problems\": []", "style": "keep", "id": "b-conflicts" }
+      ],
+      "cycleState": []
+    },
+    "mutations": {
+      "bisync": [
+        { "step": 1, "label": "① User edits $HOME", "actions": [] },
+        { "step": 2, "label": "② fsnotify → debounce", "actions": [] },
+        { "step": 3, "label": "③ archive load (safe no-base)", "actions": [] },
+        { "step": 4, "label": "④ ancestor + caches", "actions": [] },
+        { "step": 5, "label": "⑤ bootstrap dial via relay", "actions": [ { "id": "h-magic", "style": "highlight" } ] },
+        { "step": 6, "label": "⑥ relayed circuit (first bytes)", "actions": [] },
+        { "step": 7, "label": "⑦ DCUtR punch → DIRECT", "actions": [
+            { "action": "add", "target": "headers", "value": "⇄ direct connection up — relayed circuit closed", "id": "f-direct" }
+        ] },
+        { "step": 8, "label": "⑧ TOFU pin ✓", "actions": [ { "id": "h-hello", "style": "highlight" } ] },
+        { "step": 9, "label": "⑨ handshake + Hello", "actions": [ { "id": "h-magic", "style": "highlight" }, { "id": "h-ver", "style": "highlight" }, { "id": "h-hello", "style": "highlight" } ] },
+        { "step": 10, "label": "⑩ Scan (chunks)", "actions": [
+            { "action": "add", "target": "headers", "value": "→ Scan{rules} · CacheChunk*", "id": "f-scan" },
+            { "action": "add", "target": "headers", "value": "← ScanBegin · ScanChunk* · ScanDone", "id": "f-scanr" }
+        ] },
+        { "step": 11, "label": "⑪ 3-way reconcile", "actions": [
+            { "action": "setCycleState", "cycleState": [
+                { "value": "plan: 37 materialize · 2 remove · 1 conflict", "style": "add", "id": "c-plan" }
+            ] }
+        ] },
+        { "step": 12, "label": "⑫ conflicts settled", "actions": [
+            { "action": "setCycleState", "cycleState": [
+                { "value": "newest-wins: notes/idea.md (laptop)", "style": "add", "id": "c-plan" },
+                { "value": "conflict copy: idea.md.sync-conflict-…-B on both roots", "style": "add", "id": "c-conf" }
+            ] }
+        ] },
+        { "step": 13, "label": "⑬ safety check ✓", "actions": [] },
+        { "step": 14, "label": "⑭ StageFile (raw bytes, direct)", "actions": [
+            { "id": "f-direct", "style": "highlight" },
+            { "action": "add", "target": "headers", "value": "→ StageFile{path, digest} + raw payload", "id": "f-stage" }
+        ] },
+        { "step": 15, "label": "⑮ TransitionRun", "actions": [
+            { "action": "add", "target": "headers", "value": "→ TransitionChunk* · TransitionRun", "id": "f-tr" },
+            { "id": "f-stage", "style": "highlight" }
+        ] },
+        { "step": 16, "label": "⑯ applied to PVC root", "actions": [
+            { "id": "b-counters", "style": "del" },
+            { "action": "add", "target": "body", "value": "\"applied\": 37, \"deleted\": 2, \"failed\": 0,", "id": "b-counters2" }
+        ] },
+        { "step": 17, "label": "⑰ convergence re-scan", "actions": [] },
+        { "step": 18, "label": "⑱ archive re-saved", "actions": [] },
+        { "step": 19, "label": "⑲ SyncReport pushed", "actions": [
+            { "action": "add", "target": "headers", "value": "→ SyncReport{state}", "id": "f-report" }
+        ] },
+        { "step": 20, "label": "⑳ sync-state.json written", "actions": [ { "id": "f-report", "style": "highlight" } ] },
+        { "step": 21, "label": "㉑ SSE → UI", "actions": [] },
+        { "step": 22, "label": "㉒ dashboard updated", "actions": [] }
+      ],
+      "mcp": [
+        { "step": 1, "label": "① sync_status call", "actions": [
+            { "action": "replaceHeaders", "headers": [
+                { "value": "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",", "style": "keep", "id": "m-req" },
+                { "value": "  \"params\":{\"name\":\"sync_status\"}}", "style": "keep", "id": "m-req2" }
+            ] }
+        ] },
+        { "step": 2, "label": "② read sync-state", "actions": [
+            { "action": "replaceBody", "body": [
+                { "value": "// .sync-agent/sync-state.json", "style": "keep", "id": "b2-cmt" },
+                { "value": "\"last_sync_unix\": 1762334400,", "style": "keep", "id": "b2-last" },
+                { "value": "\"conflicts\": [{", "style": "keep", "id": "b2-c1" },
+                { "value": "  \"path\": \"notes/idea.md\", \"kind\": \"dir-conflict\"", "style": "keep", "id": "b2-c2" },
+                { "value": "}]}", "style": "keep", "id": "b2-c3" }
+            ] }
+        ] },
+        { "step": 3, "label": "③ status → OpenCode", "actions": [ { "id": "b2-c2", "style": "highlight" } ] },
+        { "step": 4, "label": "④ resolve call", "actions": [
+            { "action": "add", "target": "headers", "value": "{\"name\":\"sync_resolve_conflict\",", "id": "m-res" },
+            { "action": "add", "target": "headers", "value": " {\"path\":\"notes/idea.md\",\"choice\":\"keep-remote\"}}", "id": "m-res2" }
+        ] },
+        { "step": 5, "label": "⑤ validate live conflict ✓", "actions": [ { "id": "b2-c2", "style": "highlight" } ] },
+        { "step": 6, "label": "⑥ control-requests written", "actions": [
+            { "action": "add", "target": "body", "value": "resolutions: [{notes/idea.md → keep-remote}]", "id": "b2-res" }
+        ] },
+        { "step": 7, "label": "⑦ pass re-dials (same ladder)", "actions": [] },
+        { "step": 8, "label": "⑧ ControlFetch{consume} (direct session)", "actions": [
+            { "action": "add", "target": "headers", "value": "→ ControlFetch{consume:true}", "id": "m-fetch" }
+        ] },
+        { "step": 9, "label": "⑨ requests return (fetch-and-clear)", "actions": [ { "id": "m-fetch", "style": "highlight" } ] },
+        { "step": 10, "label": "⑩ honored", "actions": [ { "id": "b2-res", "style": "highlight" } ] },
+        { "step": 11, "label": "⑪ SyncReport", "actions": [
+            { "action": "add", "target": "headers", "value": "→ SyncReport{honored:[resolve notes/idea.md]}", "id": "m-rep" }
+        ] },
+        { "step": 12, "label": "⑫ sync-state updated", "actions": [] },
+        { "step": 13, "label": "⑬ agent sees it — stale requests reported", "actions": [] }
+      ],
+      "provision": [
+        { "step": 1, "label": "① attach target", "actions": [
+            { "action": "replaceHeaders", "headers": [
+                { "value": "POST /api/targets", "style": "keep", "id": "p-req" },
+                { "value": "{ \"name\": \"notes\", \"sandbox\": \"sync-oc\", … }", "style": "keep", "id": "p-req2" }
+            ] }
+        ] },
+        { "step": 2, "label": "② derive root + qualified id", "actions": [
+            { "action": "add", "target": "headers", "value": "root_remote = /sandbox/notes   id = sync-oc+notes", "id": "p-derive" }
+        ] },
+        { "step": 3, "label": "③ root-mismatch (never synced)", "actions": [ { "id": "p-derive", "style": "highlight" } ] },
+        { "step": 4, "label": "④ auto_provision ⇒ exec fallback", "actions": [] },
+        { "step": 5, "label": "⑤ exec fallback (explicit kubeconfig!)", "actions": [
+            { "action": "add", "target": "headers", "value": "oc --kubeconfig … exec -i -n <ns> <pod> -- …", "id": "p-exec" }
+        ] },
+        { "step": 6, "label": "⑥ mkdir + binary reuse", "actions": [] },
+        { "step": 7, "label": "⑦ agent spawned", "actions": [] },
+        { "step": 8, "label": "⑧ identity = (key, id)", "actions": [
+            { "action": "replaceBody", "body": [
+                { "value": "# config.toml (qualified + persisted)", "style": "keep", "id": "t-cmt" },
+                { "value": "[[targets]]", "style": "keep", "id": "t1" },
+                { "value": "name = \"notes\"", "style": "keep", "id": "t2" },
+                { "value": "sandbox = \"sync-oc+notes\"", "style": "add", "id": "t3" },
+                { "value": "root_remote = \"/sandbox/notes\"", "style": "add", "id": "t4" }
+            ] }
+        ] },
+        { "step": 9, "label": "⑨ re-dial ×3 / 4 s", "actions": [ { "id": "t3", "style": "highlight" } ] },
+        { "step": 10, "label": "⑩ same pin ✓", "actions": [] },
+        { "step": 11, "label": "⑪ root rail ✓", "actions": [] },
+        { "step": 12, "label": "⑫ first bisync converges", "actions": [] },
+        { "step": 13, "label": "⑬ persisted + UI note", "actions": [
+            { "action": "add", "target": "headers", "value": "note: auto-provisioned agent (spawned) for sync-oc+notes", "id": "p-note" },
+            { "id": "p-note", "style": "highlight" }
+        ] }
+      ],
+      "safety": [
+        { "step": 1, "label": "① pass dials", "actions": [] },
+        { "step": 2, "label": "② handshake", "actions": [] },
+        { "step": 3, "label": "③ RAIL 1 — TOFU pin ✗", "actions": [
+            { "action": "add", "target": "headers", "value": "pin: peer 12D3Koo…abc ≠ pin 12D3Koo…xyz", "style": "err", "id": "s-pin" }
+        ] },
+        { "step": 4, "label": "④ identity = (key, id)", "actions": [ { "id": "s-pin", "style": "highlight" } ] },
+        { "step": 5, "label": "⑤ RAIL 2 — Hello root facts", "actions": [
+            { "action": "add", "target": "headers", "value": "hello.root = /sandbox (bound at startup)", "id": "s-root" }
+        ] },
+        { "step": 6, "label": "⑥ root-match rail ✗", "actions": [
+            { "id": "s-root", "style": "err" },
+            { "action": "add", "target": "headers", "value": "HALT: root mismatch — repointing is a human action", "style": "err", "id": "s-halt" }
+        ] },
+        { "step": 7, "label": "⑦ RAIL 3 — plan", "actions": [] },
+        { "step": 8, "label": "⑧ delete guard ✗", "actions": [
+            { "action": "add", "target": "headers", "value": "guard: 12,408 deletes > 10k ⇒ HALT (zero mutation)", "style": "err", "id": "s-guard" }
+        ] },
+        { "step": 9, "label": "⑨ fresh no-base archive", "actions": [
+            { "action": "add", "target": "headers", "value": "archive: no-base — deletes suppressed", "id": "s-nobase" }
+        ] },
+        { "step": 10, "label": "⑩ halt → run report + UI", "actions": [] },
+        { "step": 11, "label": "⑪ loud diagnostics", "phase": "error", "actions": [
+            { "id": "s-pin", "style": "highlight" },
+            { "id": "s-halt", "style": "highlight" },
+            { "id": "s-guard", "style": "highlight" }
+        ] }
+      ]
+    }
+  },
+  "legend": [
+    { "label": "Data plane (laptop → PVC)", "color": "#58a6ff" },
+    { "label": "Applied state / responses", "color": "#3fb950" },
+    { "label": "Control plane (MCP · UI/API)", "color": "#d2a8ff" },
+    { "label": "Identity / keys / spawn", "color": "#f0883e" },
+    { "label": "Infrastructure / transports", "color": "#8b949e" },
+    { "label": "Halts / errors", "color": "#f85149" }
+  ],
+  "flowOrder": ["bisync", "mcp", "provision", "safety"],
+  "defaultFlow": "bisync"
+}

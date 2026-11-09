@@ -1,0 +1,184 @@
+/* ═══ sync-agent-pvc deck · deck-local components ═══
+   Only what this deck uses: the two bespoke PLAY loops (bisync, tunnel),
+   the option/case/hop cards, the pass bar, tables, and backup pieces.
+   Everything generic (tokens, builds, title, kit, code, presenter, print)
+   lives in deck.css — restyle here by overriding tokens, not rules. ── */
+
+/* ── dense config dumps: smaller mono, tighter leading — stays above the 14px floor ── */
+.code.dump { font-size:15px; line-height:1.45; padding:12px 16px; }
+
+/* ── transport diagram: both sides dial OUT to the untrusted relay; noise rides the
+   circuit; DCUtR migrates the stream to a direct path and the circuit is torn down ── */
+.tdiag svg { display:block; width:100%; }
+.tdiag .tnode { fill:var(--panel); stroke:var(--line); stroke-width:1.5; }
+.tdiag .tnode.rl { stroke:var(--mute); stroke-dasharray:7 7; }
+.tdiag .tnode.lt { stroke:var(--steel); }
+.tdiag .tnode.ag { stroke:var(--violet); }
+.tdiag .ttitle { font:700 18px var(--display); fill:var(--ink); text-anchor:middle; }
+.tdiag .tsub { font:400 14px var(--mono); fill:var(--mute); text-anchor:middle; }
+.tdiag .tdial { fill:none; stroke:var(--mute); stroke-width:2; stroke-dasharray:6 8; transition:stroke .4s var(--ease), opacity .4s var(--ease); }
+.slide.k2 .tdial { stroke:var(--live); stroke-dasharray:none; }
+.slide.k3 .tdial, .slide.k3 .tnoise, .slide.k3 .trelay { opacity:.3; }
+.tdiag .tnoise { font:600 14px var(--mono); fill:var(--live); text-anchor:middle; transition:opacity .4s var(--ease); }
+.tdiag .tdirect { fill:none; stroke:var(--green); stroke-width:2.5; }
+.tdiag .tdlabel { font:600 14px var(--mono); fill:var(--green); text-anchor:middle; }
+.tdiag .tid { font:400 14px var(--mono); fill:var(--soft); text-anchor:middle; }
+.tdiag marker path { fill:var(--mute); }
+.tdiag-badges { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin-top:10px; }
+.tdiag-badges .badge { display:inline-block; font:600 13px/1 var(--mono); padding:5px 8px; border-radius:6px; border:1px solid var(--line); color:var(--mute); }
+.tdiag-badges .badge.encrypted { border-color:var(--steel); color:var(--steel); }
+.tdiag-badges .badge.direct { border-color:var(--green); color:var(--green); background:var(--green-bg); }
+
+/* ── bisync pass: laptop tree · ancestor archive · PVC tree ──
+   PLAY.bisync drives it: ops classify per path against the archive
+   (A-only → copy right, B-only → copy left, both-different → conflict,
+   same → no-op); counters tick; the pass loops with a hold. */
+.bsync { display:flex; flex-direction:column; gap:14px; margin-top:4px; }
+.barchive { align-self:center; width:620px; border:1px solid var(--violet); border-radius:14px;
+  background:radial-gradient(circle at 3px 3px, var(--dot) 1.2px, transparent 1.6px) 0 0/7px 7px, var(--violet-bg);
+  padding:10px 16px 14px; }
+.barchive .agrid { display:flex; gap:4px; margin-top:9px; }
+.barchive .agrid i { width:17px; height:17px; border-radius:3px; background:var(--violet-fill); opacity:.3; transition:opacity .4s var(--ease); }
+.barchive .agrid i.lit { opacity:1; animation:fireonce 1s ease-out; }
+.barchive .blabel { display:flex; align-items:baseline; gap:10px; }
+.barchive .blabel b { font-family:var(--display); font-size:17px; color:var(--violet); }
+.bline { display:grid; grid-template-columns:1fr 1.3fr 1fr; gap:16px; align-items:stretch; flex:1; min-height:0; }
+.btree { border:1px solid var(--line); border-radius:14px; background:var(--panel); padding:10px 16px 16px; }
+.btree.laptop { border-color:var(--steel); }
+.btree.pvc { border-color:var(--violet); }
+.btree .bhead { display:flex; align-items:baseline; justify-content:space-between; }
+.btree .bhead b { font-family:var(--display); font-size:19px; }
+.bgrid { display:grid; grid-template-columns:repeat(6, 1fr); gap:6px; margin-top:12px; }
+.bgrid i { aspect-ratio:1; border-radius:3px; background:var(--track); border:1px solid var(--line); transition:background .3s var(--ease), border-color .3s var(--ease); }
+.bgrid i.scan { animation:fireonce .8s ease-out; }
+.btree.laptop .bgrid i.chg { background:var(--steel-fill); border-color:var(--steel); }
+.btree.pvc .bgrid i.chg { background:var(--violet-fill); border-color:var(--violet); }
+.bgrid i.win { background:var(--green-fill); border-color:var(--green); }
+.bgrid i.conf { background:var(--amber-fill); border-color:var(--amber); animation:fireonce 1.1s ease-out; }
+.blane { position:relative; border:1px dashed var(--line); border-radius:14px; padding:12px 16px 14px; display:flex; flex-direction:column; gap:8px; background:var(--bg); }
+.blane .lhead { display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:6px 10px; }
+.bops { display:flex; flex-direction:column; gap:6px; flex:1; min-height:0; overflow:hidden; }
+.bops span { font:600 14px/1.25 var(--mono); padding:6px 9px; border-radius:7px; border:1px solid var(--line);
+  background:var(--surface-2); color:var(--mute); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.bops span.on { opacity:1; }
+.bops span.hot { border-color:var(--green); color:var(--green); background:var(--green-bg); }
+.bops span.cold { border-color:var(--amber); color:var(--amber); background:var(--amber-bg); }
+.bops span.dim { opacity:.55; }
+.bcount { display:flex; gap:14px; align-items:baseline; border-top:1px solid var(--line); padding-top:9px; margin-top:2px; }
+.bcount b { font-family:var(--display); font-size:26px; font-variant-numeric:tabular-nums; }
+.bcount .bap { color:var(--green); } .bcount .bcf { color:var(--amber); } .bcount .bno { color:var(--mute); }
+.bcount small { font-size:14px; color:var(--mute); letter-spacing:.05em; text-transform:uppercase; }
+
+/* ── memory tunnel: sandbox → listener → allowlist gate → memory MCP ──
+   PLAY.tunnel drives it: request chips fly to the gate; allowlisted tools
+   pass (green, the store answers); anything else is refused cleanly
+   (amber, counted). Step 2 = link down: writes spool, reads miss.
+   Step 3 = reconnect: the spool flushes FIFO. */
+.tun { display:grid; grid-template-columns:1.02fr auto 1.28fr auto 1.02fr; gap:0; align-items:stretch; margin-top:2px; padding-bottom:40px; }
+.tcard { border:1px solid var(--line); border-radius:14px; background:var(--panel); padding:12px 16px 14px; display:flex; flex-direction:column; }
+.tcard.src { border-color:var(--steel); }
+.tcard.dst { border-color:var(--green); }
+.tcard .tag b { color:var(--ink); }
+.treqs { display:flex; flex-direction:column; gap:6px; margin-top:10px; flex:1; min-height:150px; }
+.trq { font:600 14px/1.2 var(--mono); padding:6px 9px; border-radius:7px; border:1px solid var(--line);
+  background:var(--surface-2); color:var(--soft); opacity:0; transform:translateX(-12px); }
+.trq.on { opacity:1; transform:none; transition:opacity .25s var(--ease), transform .25s var(--ease); }
+.trq.ok { border-color:var(--green); color:var(--green); background:var(--green-bg); }
+.trq.no { border-color:var(--amber); color:var(--amber); background:var(--amber-bg); }
+.trq.sp { border-color:var(--live); color:var(--live); }
+.trq.dim { border-color:var(--line); color:var(--mute); background:var(--surface-2); }
+.twire { align-self:center; display:flex; align-items:center; gap:8px; padding:0 10px; color:var(--mute); }
+.twire .wline { flex:1; min-width:34px; border-top:2px solid var(--line); position:relative; }
+.twire .wline::after { content:""; position:absolute; right:-1px; top:-5px; border-left:7px solid var(--line); border-top:5px solid transparent; border-bottom:5px solid transparent; }
+.twire .wtag { font:600 12px/1.3 var(--mono); white-space:nowrap; }
+.tsteps { position:absolute; left:0; right:0; bottom:0; }
+.tsteps .say { position:absolute; left:0; right:0; bottom:0; margin:0; }
+.tallow { list-style:none; margin:9px 0 0; padding:0; display:flex; gap:6px; flex-wrap:wrap; }
+.tallow li { font:600 13px/1 var(--mono); padding:6px 8px; border-radius:6px; background:var(--green-bg); border:1px solid var(--green); color:var(--green); }
+.tdeny { font:600 13px/1 var(--mono); color:var(--mute); margin-top:7px; }
+.tref { margin-top:9px; display:flex; align-items:baseline; gap:8px; border-top:1px dashed var(--line); padding-top:8px; }
+.tref b { font-family:var(--display); font-size:24px; color:var(--amber); font-variant-numeric:tabular-nums; }
+.tspool { margin-top:9px; border-top:1px dashed var(--line); padding-top:9px; }
+.tsp { display:flex; gap:5px; margin-top:7px; min-height:16px; flex-wrap:wrap; }
+.tsp i { width:15px; height:15px; border-radius:3px; background:color-mix(in srgb, var(--live) 28%, transparent); border:1px solid var(--live); }
+.tlive { display:flex; flex-direction:column; gap:6px; margin-top:10px; flex:1; }
+.tlive span { font:600 13px/1.3 var(--mono); color:var(--mute); }
+.tlive b { font:600 15px/1.2 var(--mono); color:var(--green); }
+
+/* ── three bad options: mount · vpn · one-way copy ── */
+.opts3 { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:8px; }
+.opt { border:1px solid var(--line); border-radius:14px; background:var(--panel); padding:16px 18px 18px; display:flex; flex-direction:column; gap:8px; }
+.opt h3 { margin:0; font-family:var(--display); font-size:24px; }
+.opt p { margin:0; font-size:17px; line-height:1.45; color:var(--soft); }
+.opt .verdict { margin-top:auto; align-self:flex-start; font:600 13px/1 var(--mono); padding:6px 8px; border-radius:6px; border:1px solid var(--fail); color:var(--fail); background:var(--fail-bg, transparent); }
+
+/* ── 3-way reconcile truth table ── */
+.cases { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:8px; }
+.case { border:1px solid var(--line); border-radius:12px; background:var(--panel); padding:13px 16px 15px; display:flex; flex-direction:column; gap:5px; }
+.case .when { font:600 14px/1.2 var(--mono); color:var(--mute); text-transform:uppercase; letter-spacing:.05em; }
+.case .then { font-family:var(--display); font-size:21px; color:var(--ink); }
+.case .then b.g { color:var(--green); } .case .then b.a { color:var(--amber); }
+.case.conf { border-color:var(--amber); }
+.case.conf .then b.a { animation:fireonce 1.2s ease-out; }
+.case .how { font-size:15px; line-height:1.4; color:var(--soft); }
+.case .how code { font:600 13px var(--mono); background:var(--surface-2); border:1px solid var(--line); border-radius:4px; padding:1px 5px; }
+
+/* ── pass bar (no partial truth) ── */
+.passbar { position:relative; height:46px; border:1px solid var(--line); border-radius:9px; background:var(--track); overflow:visible; margin-top:14px; }
+.passbar .fill { position:absolute; left:0; top:0; bottom:0; width:var(--w,0%); background:var(--green-fill); border-radius:8px 0 0 8px; transition:width 1.3s var(--ease) var(--d,0s); }
+.passbar .kill { position:absolute; left:var(--w,0%); top:-9px; bottom:-9px; width:3px; margin-left:-1px; background:var(--fail); opacity:0; transition:opacity .3s var(--ease); }
+.passbar .kill.on { opacity:1; }
+.passbar .ptick { position:absolute; top:calc(100% + 7px); font:600 13px/1 var(--mono); color:var(--mute); transform:translateX(-50%); }
+.pstage { display:flex; flex-direction:column; gap:4px; }
+.prules { list-style:none; margin:6px 0 0; padding:0; display:flex; flex-direction:column; gap:7px; }
+.prules li { display:flex; gap:10px; align-items:baseline; font-size:18px; color:var(--soft); }
+.prules li::before { content:""; width:9px; height:9px; border-radius:2px; background:var(--green-fill); border:1px solid var(--green); flex:none; transform:translateY(-1px); }
+.prules li b { color:var(--ink); }
+
+/* ── transport ladder (hops) ── */
+.hops { list-style:none; margin:6px 0 0; padding:0; display:flex; flex-direction:column; gap:0; }
+.hop { display:grid; grid-template-columns:34px 1fr; gap:14px; padding:11px 0; border-top:1px dashed var(--line); align-items:start; }
+.hop:first-child { border-top:none; }
+.hop .n { font-family:var(--display); font-weight:800; font-size:24px; color:var(--mute); line-height:1.1; }
+.hop p { margin:0; font-size:19px; line-height:1.4; color:var(--soft); }
+.hop p b { color:var(--ink); }
+.hop .badge { display:inline-block; font:600 13px/1 var(--mono); padding:4px 7px; border-radius:6px; border:1px solid var(--line); color:var(--mute); margin-left:8px; transform:translateY(-2px); }
+.hop .badge.direct { border-color:var(--green); color:var(--green); background:var(--green-bg); }
+.hop .badge.encrypted { border-color:var(--steel); color:var(--steel); }
+
+/* ── dashboard screenshot frame ── */
+.shotframe { border:1px solid var(--line); border-radius:14px; overflow:hidden; background:var(--panel); box-shadow:none; }
+.shotframe .bar { display:flex; align-items:center; gap:8px; padding:8px 14px; border-bottom:1px solid var(--line); }
+.shotframe .bar .dot { width:9px; height:9px; border-radius:50%; background:var(--track); border:1px solid var(--line); }
+.shotframe img { display:block; width:100%; height:auto; }
+/* the full-dashboard frame: sized by height, centered */
+.shotframe.fit { width:fit-content; margin:0 auto; }
+.shotframe.fit img { width:auto; height:396px; }
+
+/* ── milestone strip ── */
+.mstones { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+.mstones span { font:600 14px/1.2 var(--mono); padding:8px 10px; border-radius:8px; border:1px solid var(--green); background:var(--green-bg); color:var(--green); }
+.mstones span small { color:color-mix(in srgb, var(--green) 70%, var(--ink)); font-weight:600; }
+
+/* ── backup: quotes (the NFS roast) ── */
+.quotes { display:flex; flex-direction:column; gap:16px; margin-top:8px; }
+.quote { border-left:3px solid var(--line); padding:2px 0 2px 18px; }
+.quote p { margin:0; font-family:var(--display); font-size:25px; line-height:1.3; color:var(--ink); text-wrap:balance; }
+.quote .who { margin:6px 0 0; font-size:15px; color:var(--mute); }
+.quote + .answer p { font-size:19px; font-family:inherit; color:var(--soft); line-height:1.5; }
+.quote + .answer { border-left-color:var(--green); }
+
+/* ── backup: failure-semantics table ── */
+.ftable { width:100%; border-collapse:collapse; margin-top:6px; font-size:16px; }
+.ftable th { text-align:left; font:600 13px/1 var(--mono); text-transform:uppercase; letter-spacing:.06em; color:var(--mute); padding:8px 12px; border-bottom:1px solid var(--line); }
+.ftable td { padding:8px 12px; border-bottom:1px solid var(--line); color:var(--soft); vertical-align:top; }
+.ftable td:first-child { font-family:var(--display); color:var(--ink); white-space:nowrap; }
+.ftable td b { color:var(--green); } .ftable td b.halt { color:var(--amber); }
+
+/* ── backup: crate map ── */
+.crates { display:grid; grid-template-columns:repeat(2,1fr); gap:14px; margin-top:8px; }
+.crate { border:1px solid var(--line); border-radius:14px; background:var(--panel); padding:14px 18px 16px; }
+.crate h3 { margin:0 0 4px; font:700 20px var(--mono); color:var(--steel); }
+.crate p { margin:0; font-size:16px; line-height:1.45; color:var(--soft); }
+.crate .deps { margin-top:8px; font:600 13px/1 var(--mono); color:var(--mute); }
+.crate .deps b { color:var(--violet); font-weight:600; }

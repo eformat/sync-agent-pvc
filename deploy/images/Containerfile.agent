@@ -1,0 +1,23 @@
+# sync-agent sidecar image.
+#
+# M0.x build path (§10): BINARY build from this laptop via BuildConfig —
+#   cargo build --release -p sync-agent
+#   oc -n openshell new-build --binary --name=sync-agent --strategy=docker
+#   oc -n openshell start-build sync-agent --from-dir=<dir containing this file + the binary>
+# After the M0 gate: same file builds on quay.io/eformat (owner makes public).
+#
+# §8 UID/GID model: runs as the pod's SCC-assigned UID — no USER root, no chown;
+# the sync root must be writable by the pod UID (checked by the agent's hello handshake).
+
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
+
+# Sync root convention (plan: remote root /sandbox; sidecar mounts the SAME PVC).
+VOLUME ["/sandbox"]
+
+COPY sync-agent /usr/local/bin/sync-agent
+RUN chmod 0755 /usr/local/bin/sync-agent && \
+    microdnf -y install ca-certificates && microdnf clean all
+
+# M3: default mode becomes `p2p` (dials OUT to the VPS rendezvous).
+ENTRYPOINT ["/usr/local/bin/sync-agent"]
+CMD ["serve"]

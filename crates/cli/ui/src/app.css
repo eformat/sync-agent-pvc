@@ -1,0 +1,21 @@
+/* Small layout tweaks on top of PatternFly — no design-system overrides. */
+
+/* Directory picker: keep the listing scrollable inside the wizard step. */
+.dir-list {
+  max-height: 22rem;
+  overflow-y: auto;
+  border: var(--pf-t--global--border--width--regular) solid
+    var(--pf-t--global--border--color--default);
+  border-radius: var(--pf-t--global--border--radius--small);
+}
+
+/* Long error strings, multiaddrs and conflict paths must wrap, not overflow. */
+.wrap-anywhere {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mono {
+  font-family: var(--pf-t--global--font--family--mono--v1, monospace);
+  font-size: 0.875em;
+}

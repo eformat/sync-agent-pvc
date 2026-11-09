@@ -1,0 +1,19 @@
+/target
+**/target
+deploy/chart/charts/*.tgz
+*.swp
+.DS_Store
+# local env / never commit
+*.env
+.env.*
+Makefile.local
+
+# Local reference copy of the OpenShell dashboard (stale vendored fork).
+# Canonical source: github.com/eformat/openshell-dashboard. Kept on disk for
+# its local deploy values; never shipped (its values carry live cluster hosts).
+/dashboard/
+
+# M4 UI: built assets + node modules (build.rs generates a placeholder index
+# until `npm run build` runs; dist/ is embedded at compile time)
+crates/cli/ui/node_modules/
+crates/cli/ui/dist/

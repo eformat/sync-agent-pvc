@@ -1,0 +1,25 @@
+{
+  "name": "sync-agent-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "PatternFly web UI for the sync-agent-pvc daemon (served via rust-embed from ui/dist)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@patternfly/react-core": "^6.7.0",
+    "@patternfly/react-icons": "^6.7.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^6.2.1",
+    "typescript": "~5.9.3",
+    "vite": "^8.3.6"
+  }
+}

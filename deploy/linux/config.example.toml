@@ -1,0 +1,46 @@
+# sync-agent daemon config — example.
+# Install to ~/.config/sync-agent-pvc/config.toml (0600; the dir holds the
+# master key too). The daemon hot-reloads this file: adding, editing or
+# removing [[targets]] applies without a restart.
+#
+# The UI (127.0.0.1:7301) rewrites this file when you edit excludes or attach
+# a new target — comments are NOT preserved (machine-managed file).
+
+[server]
+# UI/API bind — LOOPBACK ONLY (there is no auth on this surface; the daemon
+# refuses any non-loopback bind).
+bind = "127.0.0.1:7301"
+
+[defaults]
+# The VPS relay (our own Rust relay, M3). Targets inherit this unless they
+# set their own — a target without a relay uses the `oc exec` transport.
+relay = "/ip4/YOUR-VPS/tcp/4001/p2p/RELAY_PEER_ID"
+# Safety re-scan when nothing changed (fsnotify handles the fast path).
+interval_secs = 60
+# Settle window after an fs-event burst before scanning.
+debounce_ms = 500
+# Per-sandbox master key — same value the sandbox holds. Either a 0600 file:
+master_key_file = "~/.config/sync-agent-pvc/master.key"
+# … or read it from the environment (64 hex chars) instead:
+# master_key_env = true
+
+[[targets]]
+name = "sync-oc"
+root = "~/git/p2p-claude-plan"
+sandbox = "sync-oc"
+# Remote root inside the sandbox. Policy (2026-11-06): targets default to
+# /sandbox/<name> (structure visible, multi-target collision impossible) —
+# the wizard/API derives it; set it explicitly only to override.
+# The AGENT must serve this exact root (it is bound at agent startup):
+#   sync-agent p2p … --root /sandbox/p2p-claude-plan
+# One agent process per (sandbox-id, root). Additional projects in the SAME
+# sandbox use qualified ids — e.g. sandbox = "sync-oc+notes" with
+# root_remote = "/sandbox/notes" — the identity derives from (master, id),
+# so each instance gets its own peer and the shared master.key still works.
+root_remote = "/sandbox/p2p-claude-plan"
+excludes = [
+    "node_modules",
+    "target/",
+]
+# interval_secs = 30        # per-target override
+# master_key_file = "…"     # per-target key override

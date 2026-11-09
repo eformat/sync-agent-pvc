@@ -1,0 +1,23 @@
+[package]
+name = "sync-relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "VPS relay node: dumb libp2p relay-v2 hop + DCUtR helper for sync-agent-pvc (M3)"
+
+[[bin]]
+name = "sync-relay"
+path = "src/main.rs"
+
+# Build for the VPS as a single static binary:
+#   cargo build --release -p sync-relay --target x86_64-unknown-linux-musl
+[dependencies]
+libp2p = { version = "0.57", default-features = false, features = [
+    "tokio", "tcp", "noise", "yamux", "relay", "dcutr", "identify", "ed25519", "macros",
+] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "io-util", "sync"] }
+futures = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+sync-proto = { workspace = true }

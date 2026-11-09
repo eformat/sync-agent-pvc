@@ -1,0 +1,41 @@
+# systemd unit for the sync-agent-relay VPS node (M3).
+#
+# Replaces /etc/systemd/system/p2p-claude-plans.service (the borrowed Go bootstrap
+# node on 4001). The old unit is DISABLED (not deleted) at cutover for rollback.
+#
+# Install (scripts/m3-relay-deploy.sh does all of this):
+#   sudo cp sync-relay.staged /usr/local/bin/sync-relay && sudo chmod 0755 $_
+#   sudo tee /etc/systemd/system/sync-relay.service < this file
+#   sudo systemctl daemon-reload
+#   sudo systemctl disable --now p2p-claude-plans   # retire the Go relay (rollback: enable --now)
+#   sudo systemctl enable --now sync-relay
+#
+# Identity: key at /home/<user>/.sync-agent-relay/identity.ed25519 (0600, generated
+# on first start). The relay prints its PeerId to STDOUT ONCE at startup (journal:
+# journalctl -u sync-relay | grep -i peer) — copy it into daemon/agent configs + pins.
+# Port 4001: AWS SG + the sandbox egress NetworkPolicy already allow it (M0 spike (g)).
+#
+# NO LIBP2P_FORCE_PNET (the old unit's private-swarm force): our relay is a public
+# relay-v2 hop — traffic is noise-encrypted end-to-end and per-sandbox keys live at
+# the application layer (plan §1).
+
+[Unit]
+Description=sync-agent-relay (sync-agent-pvc P2P relay, M3)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<relay-user>
+# Set --external-addr to THIS relay node's public IP (203.0.113.42 here is the
+# RFC 5737 documentation placeholder — substitute the real address at deploy).
+ExecStart=/usr/local/bin/sync-relay --listen /ip4/0.0.0.0/tcp/4001 --external-addr /ip4/203.0.113.42/tcp/4001 --key /home/<relay-user>/.sync-agent-relay/identity.ed25519
+Restart=on-failure
+RestartSec=5
+
+# Small VPS (438 MB RAM): the relay is lightweight, but keep growth bounded.
+MemoryMax=128M
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

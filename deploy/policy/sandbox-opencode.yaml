@@ -1,0 +1,151 @@
+# Sandbox policy for OpenCode sandboxes under sync-agent-pvc (M0 spike (b)).
+#
+# VERIFIED LIVE on ocp5-1 2026-11-06 with BOTH images:
+#   - anomalyco/opencode:latest → in-boundary write to /sandbox, opencode 1.19.5
+#     clean, runtime = chart-injected openshell-sandbox 0.1.2 (no outer_fence
+#     rejection). NO DERIVED IMAGE NEEDED there — the M0-era "stale runtime in
+#     the opencode image" premise was a mis-attribution of the :dev runtime skew.
+#   - FINAL IMAGE: quay.io/aipcc/base-images/agentic/opencode:2.2.5 →
+#     DERIVED to quay.io/eformat/openshell-opencode:2.2.5 (chmod -R a+rX /sandbox —
+#     aipcc ships the 770 sandbox:root skel which breaks seed-workspace as the SCC
+#     pod UID). PIN BY DIGEST sha256:1e85d936bb40720de9deeef450d5a3629c6b7be91c4
+#     92e948ccecbcaf985239f (registry manifest digest — podman's local .Digest is
+#     a different hash and 404s remotely). Live: 1/1 Running, opencode v2.2.5
+#     in-boundary, seed OK, HOME=/sandbox confirmed in-boundary (runtime sets it
+#     for the main process — the sync root IS the agent's home, plan §7 anchoring
+#     confirmed).
+#
+# Canonical schema (openshell-policy-schema, deny_unknown_fields, snake_case,
+# lowercase enums) — same shape as the openclaw sandbox-policy and the
+# OpenShell fixture (crates/openshell-supervisor-network/testdata/sandbox-policy.yaml).
+#
+# - filesystem_policy: sync root is /sandbox (the PVC, plan §8) — read-write;
+#   /tmp for agent scratch; standard read-only set for the runtime. NOTE: the
+#   anomalyco/opencode base is ALPINE — NO usr-merge (/bin, /sbin, /lib are real
+#   dirs), so all of them must be granted read (execute lives on the read grants);
+#   omitting /bin yields `Permission denied` spawning the entrypoint (the openclaw
+#   /opt/openclaw lesson). The process block is omitted: run_as_user "sandbox"
+#   does not exist in this image — empty defaults keep the pod identity.
+#   2026-11-07 (tool-gap image): /opt added — google-chrome-stable installs the
+#   renderer at /opt/google/chrome/chrome, and an ungranted /opt repeats the
+#   openclaw /opt lesson (Permission denied spawning). /dev/shm added read-write:
+#   Chrome maps shared memory there unless --disable-dev-shm-usage is passed, and
+#   pods ship a 64Mi /dev/shm.
+#   2026-11-08 (toolbox image): /opt grant REMOVED — chrome was removed from the
+#   image (the OpenShell boundary's child-hardening seccomp filter prevents it
+#   from ever running as the agent; see sandbox-tool-gaps.md Audit 2). The base's
+#   /opt/opencode only holds non-executed resources — verified: the 2026-11-06
+#   policy (pre-chrome) ran this same base WITHOUT the /opt grant. /dev/shm kept:
+#   generically useful (shm/tmpfs users) and harmless (pod-local 64Mi).
+# - network_policies: egress for the opencode binary only (the image ships it at
+#   /usr/local/bin/opencode — NOT /usr/bin; the provider-profile examples that
+#   use /usr/bin/opencode are test fixtures). OpenRouter per the M0.0 runbook;
+#   RHOAI MaaS endpoints get added when inference moves in-house.
+#   2026-11-07 (tool-gap image): localhost-http for the slides-deck export flow —
+#   python3 -m http.server binds 127.0.0.1:8000 (references/export.md in the
+#   slides-deck skill; chrome has since been removed from the image — export
+#   runs laptop-side). LIVE-VERIFY on first use:
+#   if the supervisor logs transparent_tcp_policy_denied for one of these paths,
+#   adjust the binaries list to the actually-executed path (the opencode
+#   hardlink lesson: OPA sees the EXECUTED path).
+#
+# Attach at create: openshell sandbox create --policy <this-file> ...
+version: 1
+
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /bin
+    - /sbin
+    - /usr
+    - /lib
+    - /proc
+    - /dev/urandom
+    - /etc
+    - /var/log
+  read_write:
+    - /sandbox
+    - /tmp
+    - /dev/null
+    - /dev/shm
+
+landlock:
+  compatibility: best_effort
+
+network_policies:
+  openrouter:
+    name: openrouter
+    endpoints:
+      - host: openrouter.ai
+        port: 443
+        protocol: rest
+        access: read-write
+    binaries:
+      # aipcc image (quay.io/aipcc/base-images/agentic/opencode:2.2.5): native ELF
+      # at /usr/local/sbin/opencode. The anomalyco alpine image used
+      # /usr/local/bin/opencode — adjust if the image reference changes.
+      - path: /usr/local/sbin/opencode
+  # NOTE — MaaS inference endpoint (maas.apps.ocp.cloud.rhai-tmm.dev:443) is
+  # DELIBERATELY NOT authored here. It is derived automatically as the
+  # `_provider_openai` network-policy entry when the `openai` provider profile
+  # is ATTACHED to the sandbox (profile: maas host, rest, enforce, binaries
+  # node/node-26/opencode). Authoring a policy-owned maas endpoint alongside
+  # the provider-derived one = endpoint ambiguity → AttachSandboxProvider
+  # fails with FAILED_PRECONDITION and the receipt is revoked (verified live
+  # 2026-11-07; see docs/tool-image-redeploy.md). After ANY sandbox recreate:
+  # attach the provider FIRST, and never hand-author this endpoint.
+  localhost-http:
+    # 2026-11-07 (tool-gap image): slides-deck export flow —
+    # `python3 -m http.server 8000` (bind) + google-chrome print (connect).
+    # python3 lives at /usr/bin/python3.14 (merged /usr/sbin/python3 → same ELF).
+    # Port matches references/export.md; live-verify and trim the binaries list
+    # on first run.
+    # 2026-11-08 (toolbox image): chrome entries REMOVED (chrome dropped from
+    # the image — see sandbox-tool-gaps.md Audit 2; slides export runs
+    # laptop-side). Kept for local-serve smoke tests (curl/wget against an
+    # in-boundary http.server).
+    name: localhost-http
+    endpoints:
+      - host: 127.0.0.1
+        port: 8000
+        protocol: rest
+        access: read-write
+    binaries:
+      - path: /usr/bin/python3.14
+      - path: /usr/bin/python3
+  # 2026-11-09: the former `openshift-api` group (api.ocp5-…:6443 for
+  # oc/kubectl) is REMOVED — port 6443 is hard-blocked upstream
+  # (SEC-005 / BLOCKED_CONTROL_PLANE_PORTS, enforced at DNS-contract + CONNECT
+  # layers, overriding allowed_ips), so the endpoint could never carry a
+  # request; it only generated policy_dns_no_valid_address refusals. Cluster
+  # access now rides the `kubernetes-api` PROVIDER (profile:
+  # deploy/provider-profiles/kubernetes-api.yaml) whose derived endpoint is the
+  # in-cluster API service kubernetes.default.svc.cluster.local:443 — reachable
+  # because the supervisor pod opens upstreams in-cluster, and the bearer token
+  # is injected at egress (placeholder in $KUBE_TOKEN, never a raw credential;
+  # see make k8s-provider-rotate). NEVER re-add a 6443 endpoint, and NEVER
+  # hand-author kubernetes.default.svc.cluster.local here — the provider owns
+  # that endpoint (hand-authoring the same host:port = attach ambiguity =
+  # FAILED_PRECONDITION, the maas lesson).
+  pypi:
+    # 2026-11-09 (owner's call): the agent may reach PyPI directly — uv resolves
+    # and installs packages in-sandbox. Wheelhouse staging stays as the
+    # offline fallback. Binaries: the uv/uvx static binaries + the system
+    # python + curl. Egress stays DENIED for everything else (github/quay/
+    # general internet) — builds stay laptop-side by design.
+    name: pypi
+    endpoints:
+      - host: pypi.org
+        port: 443
+        protocol: rest
+        access: read-write
+      - host: files.pythonhosted.org
+        port: 443
+        protocol: rest
+        access: read-write
+    binaries:
+      - path: /usr/local/bin/uv
+      - path: /usr/local/bin/uvx
+      - path: /usr/bin/python3.14
+      - path: /usr/bin/python3
+      - path: /usr/bin/curl

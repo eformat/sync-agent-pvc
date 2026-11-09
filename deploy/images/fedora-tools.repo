@@ -1,0 +1,26 @@
+# Fedora 43 repos — tool-gap filler for the sync-agent sandbox image.
+#
+# The Hummingbird base (aipcc opencode) carries a curated repo with python3,
+# jq, unzip, poppler-utils, curl, diffutils — but NOT ImageMagick or wget.
+# Fedora 43 fills those gaps; the base's glibc 2.43 satisfies Fedora-43-built
+# libraries (built against glibc 2.42).
+#
+# (google-chrome.repo lived here too until 2026-11-08, when Chrome was removed
+# from the image — see the Containerfile's CHROME note for the why and the
+# re-add recipe.)
+#
+# Pinned to literal 43 (no $releasever) for reproducible rebuilds. Bump the
+# number — not the layout — when the base glibc moves.
+[fedora-tools]
+name=Fedora 43 Everything
+baseurl=https://download.fedoraproject.org/pub/fedora/linux/releases/43/Everything/x86_64/os/
+enabled=1
+gpgcheck=1
+gpgkey=https://fedoraproject.org/fedora.gpg
+
+[fedora-tools-updates]
+name=Fedora 43 Updates
+baseurl=https://download.fedoraproject.org/pub/fedora/linux/updates/43/Everything/x86_64/
+enabled=1
+gpgcheck=1
+gpgkey=https://fedoraproject.org/fedora.gpg

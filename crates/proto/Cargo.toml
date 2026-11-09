@@ -1,0 +1,17 @@
+[package]
+name = "sync-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Wire protocol for sync-agent-pvc: MAGIC handshake, bounded frames, chunked messages"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+serde_json = "1"
+# Streaming blake3 for Session::read_payload_hashed (same major as sync-core's).
+blake3 = "1"
+sync-core = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

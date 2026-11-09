@@ -1,0 +1,163 @@
+# sync-agent-pvc chart values.
+# NOTE: secret VALUES are never set here — Secrets render from --set/env at deploy time (§9).
+#
+# Values under `openshell:` map to the vendored gateway-chart 0.1.2 (charts/openshell/).
+# Proven baseline: deployed via ACM/ArgoCD on the coco + prelude spoke tiers.
+
+# Install script derives routeHost from the cluster apps domain at deploy time.
+routeHost: openshell-openshell.apps.example.com
+
+namespace: openshell
+
+openshell:
+  # Stable, guide-aligned resource names (SA `openshell`/`openshell-sandbox`, svc `openshell`)
+  # — without this, the release prefix renames SAs and the SCC RoleBinding misses its subject.
+  fullnameOverride: openshell
+
+  # Gateway image: public patched build (provisioning repair window + deadline patch,
+  # built from the v0.1.2 base) — zero ghcr dependency, proven on non-kata spokes.
+  gateway:
+    image:
+      registry: quay.io
+      repository: eformat/openshell-gateway
+      tag: 0.1.2-deadline.2
+      pullPolicy: Always
+  # Supervisor + sandbox runtime MUST be the same chart-family version (0.1.2).
+  # M0.0 findings: (1) the guide's v0.0.116-rhaiv.0 tag doesn't exist on ghcr; (2) the
+  # floating :dev images are OLDER than the 0.1.2 boundary schema (unknown field
+  # `outer_fence`) on BOTH sides. ghcr tag LIST is truncated/incomplete — verify tags by
+  # manifest HEAD, not by listing (sandbox:0.1.2 exists, returns 200).
+  supervisor:
+    image:
+      registry: ""
+      repository: openshell/supervisor
+      tag: "0.1.2"
+      pullPolicy: Always
+  sandboxRuntime:
+    image:
+      registry: ""
+      repository: openshell/sandbox
+      tag: "0.1.2"
+      pullPolicy: Always
+
+  # Single-user TEST cluster convenience (guide + chart warning: never on shared clusters).
+  server:
+    auth:
+      allowUnauthenticatedUsers: true
+    # OIDC user authentication (2026-11-06: "all in on OIDC"): the
+    # dashboard's Keycloak JWTs validate here — aud=openshell-dashboard (the
+    # audience mapper on the openshell-console client), roles from
+    # realm_access.roles (your-admin-user: admin). mTLS clients (CLI, sync daemon)
+    # keep working alongside: the trusted local identity carries the
+    # openshell-admin/openshell-user roles. Keycloak = the hub realm the
+    # cluster's OpenShift OAuth delegates to (docs/keycloak-oidc-setup.md).
+    oidc:
+      issuer: "https://keycloak.apps.example.com/realms/example-realm" # SET YOURS: the hub Keycloak realm issuer
+      audience: "openshell-dashboard"
+      rolesClaim: "realm_access.roles"
+      adminRole: "admin"
+      userRole: "user"
+
+  # Server cert SANs: the gateway Route host + the wildcard that later enables
+  # sandbox service URLs ({ws}--{sbx}--{svc}.openshell.apps.<domain>) without re-issue.
+  pkiInitJob:
+    enabled: true
+    serverDnsNames:
+      - openshell-openshell.apps.example.com
+      - "*.openshell.apps.example.com"
+
+  # Gateway pod SCC fit: chart defaults 1000 are rejected by restricted-v2 on ocp5-1
+  # (ns range 1001030000-1001039999). Pin to the range — same pattern as the coco overlay.
+  # The SANDBOX pods get the privileged SCC via the RoleBinding (supervisor needs netns/
+  # nftables/Landlock); spike (f) measures the actual sandbox UID.
+  podSecurityContext:
+    fsGroup: 1001030000
+  securityContext:
+    runAsUser: 1001030000
+
+  # The chart's preflight lookup for Agent Sandbox CRDs breaks offline/first-install
+  # renders (coco overlay gotcha) — disable; step 0 of the runbook checks the CRD instead.
+  agentSandbox:
+    preflight:
+      enabled: false
+
+# VPS relay/rendezvous egress (§1 P2P transport; NetworkPolicy layer — the OpenShell
+# `policy update` L7 layer does NOT touch k8s NetworkPolicies, and the OpenShell
+# sandbox-workloads NP is default-deny-egress, so this supplementary policy is required).
+vps:
+  enabled: true
+  cidr: 203.0.113.42/32 # SET YOURS: the VPS relay node's public IP (RFC 5737 placeholder)
+  ports:
+    - 4001 # our sync-relay (crates/relay) — the M3-era Go p2p-claude-plans unit is retired
+  podSelector:
+    matchLabels:
+      openshell.ai/boundary-role: workload
+
+# Sync sidecar image — M0.x: in-cluster registry via BuildConfig (§10);
+# after the M0 gate: quay.io/eformat/... (values flip, chart unchanged).
+# NOTE (M4): this standalone agent image is the exec-fallback artifact — the
+# exec transport uploads the musl binary from the LAPTOP, not from an image.
+# The IN-SANDBOX agent ships via the derived sandbox image below
+# (sandboxTemplate.image — base openshell-opencode + the sync-agent binary).
+syncAgent:
+  image:
+    repository: image-registry.openshift-image-registry.svc:5000/openshell/sync-agent
+    tag: latest
+    pullPolicy: Always
+
+# M4 sync-agent injection wiring (study: docs/m4-workload-template.md).
+#
+# The OpenShell `SandboxWorkloadTemplate` is GATEWAY state (SQLite, created via
+# `openshell sandbox template create`), not a k8s object — helm cannot render
+# it, and its schema (image+env+resources only) cannot carry the main-process
+# spec anyway. What the chart renders is the wiring the sandbox consumes:
+# the master-key Secret and the opencode.json / create-command ConfigMap.
+#
+# enabled=false keeps the default render/lint clean; flip it (and pass the key)
+# in the DEPLOY values file:
+#   --set sandboxTemplate.enabled=true \
+#   --set sandboxTemplate.masterKey=<64-hex> \
+#   --set sandboxTemplate.image.digest=sha256:...
+sandboxTemplate:
+  enabled: false
+
+  # Sandbox name AND p2p sandbox id — the identity derivation context is
+  # "sync-agent-pvc/v1/sandbox/<id>" (crates/proto p2p.rs), so the daemon's
+  # per-target sandbox id MUST match this value or the PeerIds won't line up.
+  name: sync-oc
+  # Gateway profile for the create flow: `openshift` = ocp5-1 (mtls, no OIDC).
+  gateway: openshift
+
+  # Derived sandbox image (recipe in docs/m4-workload-template.md): base
+  # quay.io/eformat/openshell-opencode + the musl sync-agent binary at
+  # sandboxBinaryPath + the seeded /sandbox/.config/opencode/opencode.json.
+  # Pin by REGISTRY MANIFEST digest (podman's local .Digest is a different
+  # hash and 404s remotely — M0 lesson). Required when enabled=true.
+  image:
+    registry: quay.io
+    repository: eformat/openshell-opencode-sync
+    digest: ""
+
+  # Env var the master key rides into the sandbox: chart Secret → create-time
+  # `--env-from` → SandboxSpec.environment → workload pod env. The agent's p2p
+  # mode falls back to this var when --master-key-file is absent
+  # (crates/agent p2p.rs load_master_key). Name is fixed by the agent code.
+  keyEnv: SYNC_AGENT_MASTER_KEY
+
+  # VPS relay multiaddr (set yours: <relay-ip>/tcp/4001/p2p/<relay-peer-id>;
+  # the relay prints its PeerId to stdout on first start; 203.0.113.42 is the
+  # RFC 5737 documentation placeholder, PeerId from the repo's own examples).
+  relay: /ip4/203.0.113.42/tcp/4001/p2p/12D3KooWQqWcYxCifgqAsynZL2uJUd132gbG3XhZbCQZMs6Dq9Qc
+
+  # Where the agent binary lives inside the derived image — referenced by both
+  # the mcp block (opencode.json) and the main-process command.
+  sandboxBinaryPath: /usr/local/bin/sync-agent
+
+  # Main-process restart behavior (SandboxRestartPolicy: never|on-failure|always).
+  # on-failure: an agent CRASH restarts it; relay drops do not exit the process
+  # (reconnect backoff 1s→30s is in-agent), so the sandbox stays Ready.
+  restartPolicy: on-failure
+
+  # NEVER set the key here — it renders the Secret from --set at deploy time
+  # and fails loudly (helm `required`) when absent. §9: k8s Secrets + env.
+  # masterKey:

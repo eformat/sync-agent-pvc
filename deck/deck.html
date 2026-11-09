@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Your Laptop Is the Durable Tier — sync-agent-pvc</title>
+<!-- Commands the syntax highlighter recognizes in .code / .kit dd (pipe-separated) -->
+<meta name="deck-commands" content="sync-agent|cargo|oc|kubectl|git|rsync|ssh|qrencode">
+<link rel="stylesheet" href="deck.css">
+<link rel="stylesheet" href="components.css">
+</head>
+<body>
+<!-- data-hard-stop: the presenter gauge's full scale, in seconds (20 min for a ~14 min plan). -->
+<main id="deck" data-hard-stop="1200">
+
+<!-- ═══ 1 · TITLE ═══ -->
+<section class="slide title" data-seconds="40" data-coach="Look up before the hook. Promise the one thing they leave with: a protocol for two real disks.">
+  <div class="field" aria-hidden="true" data-repeat="300"><i></i></div>
+  <p class="kicker">Agent infrastructure · a field guide</p>
+  <h1>Your Laptop Is the<br>Durable Tier</h1>
+  <p class="lede">sync-agent-pvc — your files <em>and</em> your memory, alive in every sandbox your agents live in.</p>
+  <p class="hookline">Two real disks. One honest protocol.</p>
+  <p class="eq" data-step="1"><span class="steel">laptop disk</span> + <span class="violet">sandbox disk</span> + hostile link = <span class="green">one convergent tree</span></p>
+  <p class="byline"><b>eformat</b></p>
+  <aside class="notes">
+    <p>[pause 2s: look up] Your agents run in sandboxes on a cluster that gets rebuilt any afternoon. But the work — the repos, the plans, the <strong>memory they think with</strong> — lives here, on this laptop.</p>
+    <p>[click] This talk is the protocol that makes <strong>two real disks and a hostile network</strong> behave like one honest tree. By the end you'll know exactly where it refuses to cheat.</p>
+  </aside>
+</section>
+
+<!-- ═══ 2 · THE GAP ═══ -->
+<section class="slide" data-seconds="50" data-coach="Name both sides before the tension. Do not solve it yet.">
+  <p class="kicker">The gap · where work happens</p>
+  <h2>Your agents run on the cluster. Your work lives on your laptop.</h2>
+  <div class="stage" aria-hidden="true">
+    <div class="opts3">
+      <div class="opt" data-step="0"><h3><span class="steel">💻 laptop</span> · $HOME</h3><p>Git repos · the plans · the memory store the agents think with. Where you are. Where the work <b>is</b>.</p><span class="verdict" style="border-color:var(--green); color:var(--green);">durable</span></div>
+      <div class="opt" data-step="1"><h3><span class="violet">📦 sandbox</span> · PVC</h3><p>OpenCode in OpenShell on OpenShift. Fast, disposable, rebuilt from GitOps any afternoon.</p><span class="verdict" style="border-color:var(--amber); color:var(--amber);">ephemeral</span></div>
+    </div>
+    <p class="say" data-step="2">I want the agents to work like they're <b>on</b> the laptop — while the laptop is closed.</p>
+  </div>
+  <p class="foot">OpenShell sandboxes on OpenShift, one PVC per sandbox. Situation, not measurement.</p>
+  <aside class="notes">
+    <p>Here's the setup. On the laptop: the git repos, the plans, and the <strong>memory store my agents think with</strong>. That's where I am, that's where the work is.</p>
+    <p>[click] On the cluster: OpenCode agents in OpenShell sandboxes, working on PVCs. Fast, disposable — and rebuilt from GitOps <strong>any afternoon</strong>. [beat]</p>
+    <p>[click] I want the agents to work like they're <strong>on</strong> the laptop — while the laptop is <strong>closed</strong>. Hold that tension.</p>
+  </aside>
+</section>
+
+<!-- ═══ 3 · THREE BAD OPTIONS ═══ -->
+<section class="slide" data-seconds="55" data-coach="One card per click. Land the root cause on the last beat: exactly one copy is real.">
+  <p class="kicker">The gap · rejected options</p>
+  <h2>Mounts, VPNs, and one-way copies each fail differently.</h2>
+  <div class="stage" aria-hidden="true">
+    <div class="opts3">
+      <div class="opt" data-step="1" style="--d:.0s"><h3>NFS mount</h3><p>One authoritative copy; clients borrow it. Unmount it and the files are gone. Stretch it over a WAN and every tool crawls.</p><span class="verdict">the network pretends to be a disk</span></div>
+      <div class="opt" data-step="2" style="--d:.15s"><h3>VPN into the cluster</h3><p>Inbound exposure, and the cluster quietly becomes the source of truth. A rebuild afternoon becomes a migration.</p><span class="verdict">the wrong side becomes canonical</span></div>
+      <div class="opt" data-step="3" style="--d:.3s"><h3>One-way copy</h3><p>rsync and friends: one direction. Deletes lie to you. A conflict isn't hard — it's <b>inexpressible</b>.</p><span class="verdict">divergence treated as an error</span></div>
+    </div>
+    <p class="say" data-step="4">All three fail for the same root reason: <b>exactly one copy is real.</b></p>
+  </div>
+  <p class="foot">The full roast, with receipts: docs/design-faq.md in the repo.</p>
+  <aside class="notes">
+    <p>So what are the options? A network mount. [click] It pretends the network is a disk: one authoritative copy, clients borrow it. Unmount it — the files are gone. Stretch it over a WAN — every tool crawls.</p>
+    <p>[click] A VPN. Now you're exposing the cluster inbound, and the cluster quietly becomes the source of truth. On a rebuild afternoon, that hurts.</p>
+    <p>[click] Or a one-way copy. Deletes lie, and conflicts aren't hard — they're <strong>inexpressible</strong>.</p>
+    <p>[click] All three fail for the same root reason: <strong>exactly one copy is real</strong>. This project starts from the opposite premise.</p>
+  </aside>
+</section>
+
+<!-- ═══ 4 · THE INVERSION ═══ -->
+<section class="slide" data-seconds="50" data-coach="This is the design claim. Slow down; the rest of the talk is this slide, implemented.">
+  <p class="kicker">The design · the inversion</p>
+  <h2>Two real disks, both authoritative — divergence is expected state.</h2>
+  <div class="stage" aria-hidden="true">
+    <div class="cases">
+      <div class="case"><span class="when">💻 laptop · real, local disk</span><span class="then">the <b class="g">durable tier</b></span><p class="how">Survives a cluster rebuild by not caring. Stays instant when the cluster is dark.</p></div>
+      <div class="case"><span class="when">📦 sandbox PVC · real, local disk</span><span class="then">a <b class="g">working set</b></span><p class="how">Fast and disposable by design. Stays instant when the laptop is shut.</p></div>
+    </div>
+    <p class="say" data-step="1">Neither is a cache of the other. Divergence is <b>expected state</b> — the protocol converges it, it doesn't prevent it.</p>
+    <p class="say" data-step="2">Everything hard in this project exists <b>only because there are two copies</b>.</p>
+  </div>
+  <p class="foot">The inversion vs NFS: ARCHITECTURE.md · docs/design-faq.md.</p>
+  <aside class="notes">
+    <p>sync-agent-pvc starts from the opposite premise. The laptop and the PVC are <strong>both real, local filesystems</strong>. Neither is a cache of the other.</p>
+    <p>[click] The laptop is the <strong>durable tier</strong> — it survives a cluster rebuild by not caring.</p>
+    <p>[click] The sandbox is a <strong>working set</strong> — fast, and disposable by design. When the laptop is shut, the sandbox stays instant; when the cluster is dark, the laptop stays instant.</p>
+    <p>[click] So divergence isn't an error to prevent — it's expected state that a protocol <strong>converges</strong>. Conflict staging, deletion guards, relay fallback, spooling: every hard part here exists only because there are two copies.</p>
+  </aside>
+</section>
+
+<!-- ═══ 5 · THE BISYNC PASS (PLAY.bisync) ═══ -->
+<section class="slide" data-play="bisync" data-ops="l|r|l|n|r|c|l|r|n|l|c|r" data-seconds="65" data-coach="Let one full pass complete. Point at the archive when it pulses — the only shared state. If behind: 'conflicts next' and Shift+Right.">
+  <p class="kicker">The engine · a pass</p>
+  <h2>Every pass reconciles both trees against a third: the ancestor archive.</h2>
+  <div class="stage bsync" aria-hidden="true">
+    <div class="barchive">
+      <div class="blabel"><b>ancestor archive</b><span class="tag">the last state both sides agreed on</span></div>
+      <div class="agrid" data-repeat="40"><i></i></div>
+    </div>
+    <div class="bline">
+      <div class="btree laptop"><div class="bhead"><b>💻 laptop</b><span class="tag">$HOME/code</span></div><div class="bgrid" data-repeat="24"><i></i></div></div>
+      <div class="blane">
+        <div class="lhead"><span class="tag" data-step="1">1 · scan · blake3</span><span class="tag" data-step="2">2 · reconcile · 3-way</span><span class="tag" data-step="3">3 · apply · archive advances</span></div>
+        <div class="bops"></div>
+        <div class="bcount"><b class="bap">0</b><small>applied</small><b class="bcf">0</b><small>conflicts</small><b class="bno">0</b><small>no-op</small></div>
+      </div>
+      <div class="btree pvc"><div class="bhead"><b>📦 sandbox PVC</b><span class="tag">/sandbox/code</span></div><div class="bgrid" data-repeat="24"><i></i></div></div>
+    </div>
+  </div>
+  <p class="foot">Schematic of run_pass — one classified op per tick. Engine: crates/core · scan (blake3) · 3-way reconcile · archive.</p>
+  <aside class="notes">
+    <p>Here's the mechanism. Every pass is the same shape, whichever transport carries it.</p>
+    <p>[click] <strong>Scan</strong>: blake3 fingerprints on both trees. Mtimes only power a local warm-scan quick-check — never a cross-machine decision.</p>
+    <p>[click] <strong>Reconcile</strong>: each path is compared three ways — laptop, sandbox, and the ancestor archive, the last state both sides agreed on. Changed on one side, that side wins. Identical on both: no-op. Different on both: that's the next slide.</p>
+    <p>[click] <strong>Apply</strong>: staged writes, atomic renames — and the archive advances only when the pass completes. [beat] Then it does it all again, from either side.</p>
+  </aside>
+</section>
+
+<!-- ═══ 6 · CONFLICTS ═══ -->
+<section class="slide" data-seconds="55" data-coach="The amber card is the point. Say 'nothing is ever silently merged' and wait a beat.">
+  <p class="kicker">The engine · conflicts</p>
+  <h2>A simultaneous edit is undetectable — so divergence is made well-defined.</h2>
+  <div class="stage" aria-hidden="true">
+    <div class="cases">
+      <div class="case" data-step="1"><span class="when">changed on laptop only</span><span class="then">laptop wins <b class="g">→ copy →</b></span></div>
+      <div class="case" data-step="1" style="--d:.1s"><span class="when">changed on PVC only</span><span class="then"><b class="g">← copy ←</b> PVC wins</span></div>
+      <div class="case" data-step="2" style="--d:.2s"><span class="when">both changed, identically</span><span class="then">no-op — already converged</span></div>
+      <div class="case conf" data-step="3" style="--d:.3s"><span class="when">both changed, differently</span><span class="then"><b class="a">conflict</b> — winner materializes, loser kept</span><p class="how">loser preserved as <code>.sync-conflict-*</code> · a human resolves it: dashboard or <code>sync_resolve_conflict</code> in the sandbox</p></div>
+    </div>
+    <p class="say" data-step="4">No distributed locking. No silent last-write-wins. <b>Nothing is ever silently merged.</b></p>
+  </div>
+  <p class="foot">A truly simultaneous edit is indistinguishable from sequential divergence — by design, docs/design-faq.md.</p>
+  <aside class="notes">
+    <p>About that case. A truly simultaneous edit is indistinguishable from edits a second apart — so the design doesn't try to detect simultaneity.</p>
+    <p>[click] It makes divergence <strong>well-defined</strong>. One side changed: that side wins. Both changed identically: nothing to do.</p>
+    <p>[click] Both changed differently: the winner materializes, the loser is preserved as a <strong>sync-conflict copy</strong> — nothing is ever silently merged. [beat]</p>
+    <p>[click] A human resolves it — in the dashboard, or from inside the sandbox with <strong>sync_resolve_conflict</strong>. No distributed locking anywhere in this design.</p>
+  </aside>
+</section>
+
+<!-- ═══ 7 · CONFLICT RESOLUTION, LIVE ═══ -->
+<section class="slide" data-seconds="40" data-coach="This is this deck's own repo syncing while we built it — say so. The toast wording is the promise: honored next pass, the loser's divergent content dropped.">
+  <p class="kicker">The engine · resolution, live</p>
+  <h2>Resolving is two clicks — honored on the next pass.</h2>
+  <div class="stage" aria-hidden="true">
+    <div class="shotframe" data-step="1">
+      <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="tag">dashboard · the choice, staged</span></div>
+      <img src="crop-ui.png" alt="Dashboard target card: Conflicts (2) — .agents and .git, each with Keep laptop and Keep sandbox buttons">
+    </div>
+    <div class="shotframe" data-step="2" style="--d:.15s; width:620px; margin:14px 0 0 auto;">
+      <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="tag">click Keep laptop · recorded</span></div>
+      <img src="crop-toasts.png" alt="Two green toasts: Conflict resolution recorded — .agents to keep-local and .git to keep-local, honored on the next pass; the losing side's divergent content will be dropped">
+    </div>
+    <p class="say" data-step="2" style="margin-top:10px;">The same choice works from inside the sandbox — <b>sync_resolve_conflict</b>.</p>
+  </div>
+  <p class="foot">Live dashboard, Nov 2026 — resolving this deck's own sync (.agents, .git) · docs/screenshots.</p>
+  <aside class="notes">
+    <p>And here is that promise working — on this very deck. Two paths diverged on both sides while we were building it: <strong>.agents</strong> and <strong>.git</strong>.</p>
+    <p>[click] The dashboard stages the choice — keep laptop, keep sandbox. Two clicks, no terminal.</p>
+    <p>[click] The daemon records it: <strong>honored on the next pass</strong>, the losing side's divergent content dropped. And the same choice works from inside the sandbox with sync_resolve_conflict.</p>
+  </aside>
+</section>
+
+<!-- ═══ 8 · NO CLOCK TRUST ═══ -->
+<section class="slide" data-seconds="45" data-coach="The skew is a war story, not a hypothetical — say so.">
+  <p class="kicker">The engine · honesty about time</p>
+  <h2>A ten-hour clock skew costs a re-hash — never a wrong decision.</h2>
+  <div class="stage" aria-hidden="true">
+    <div style="display:flex; gap:40px; align-items:center;">
+      <b class="huge" style="font-size:120px; color:var(--steel);" data-step="1" data-vals="0,10" data-suf=" h">0 h</b>
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        <p class="plain" data-step="1" style="--d:.1s;">The sandbox clock ran <b>10 hours behind</b> the laptop during live testing.</p>
+        <p class="plain" data-step="2" style="--d:.2s;">Fingerprints are mtime + blake3 — but mtimes only power the <b>local</b> warm-scan.</p>
+        <p class="plain" data-step="3" style="--d:.3s;">Every cross-machine "did this change?" is settled by <b>content digest</b> against the archive base.</p>
+      </div>
+    </div>
+    <p class="say" data-step="3" style="--d:.5s">Sync converged anyway. A skew costs a re-hash, <b>never a wrong decision</b>.</p>
+  </div>
+  <p class="foot">Observed during live testing, Nov 2026 · ARCHITECTURE.md §load-bearing details.</p>
+  <aside class="notes">
+    <p>During live testing, the sandbox clock ran <strong>ten hours behind</strong> my laptop. [beat] The sync converged anyway.</p>
+    <p>[click] Why: fingerprints are mtime plus blake3, but mtimes only power the <strong>local</strong> quick-check.</p>
+    <p>[click] Every cross-machine "did this change?" is settled by <strong>content digest</strong> against the archive base. A skew costs a re-hash — <strong>never a wrong decision</strong>.</p>
+  </aside>
+</section>
+
+<!-- ═══ 9 · NO PARTIAL TRUTH ═══ -->
+<section class="slide" data-seconds="50" data-coach="Advance twice mid-sentence: 'kill the daemon at eighty percent' — click — 'leaves eighty percent converged'.">
+  <p class="kicker">The engine · honesty about failure</p>
+  <h2>A pass killed at eighty percent leaves eighty percent converged.</h2>
+  <div class="stage pstage" aria-hidden="true">
+    <div class="passbar" data-step="1"><div class="fill" style="--w:80%"></div><div class="kill"></div>
+      <span class="ptick" style="left:80%;">kill −9 here</span>
+      <span class="ptick" style="left:0;">pass start</span>
+      <span class="ptick" style="left:100%;">archive advances</span>
+    </div>
+    <div style="display:flex; align-items:baseline; gap:16px; margin-top:26px;" data-step="1">
+      <b class="huge" data-vals="0,80" data-suf="%">0%</b><span class="plain">of the pass applied and converged — <b>idempotent by digest</b>, the rest re-plans next pass</span>
+    </div>
+    <ul class="prules" data-step="2">
+      <li><span>Writes land in staged temps <b>.sync-agent-tmp-*</b> → fsync → <b>atomic rename</b>.</span></li>
+      <li><span>The archive advances <b>only on a completed pass</b> — never half-advanced.</span></li>
+      <li><span>Killed mid-transfer: staging is <b>hashed on arrival</b>; a digest mismatch is a retry, never a corrupt apply.</span></li>
+    </ul>
+  </div>
+  <p class="foot">Failure semantics, ARCHITECTURE.md §the chaos gate · engine: crates/core.</p>
+  <aside class="notes">
+    <p>Same honesty about failure. Every write lands in a staged temp, fsyncs, and renames <strong>atomically</strong>. The archive advances only when a pass completes.</p>
+    <p>[click] So kill the daemon at eighty percent. [click] The eighty percent that applied is <strong>converged</strong> — idempotent by digest — and the rest re-plans on the next pass.</p>
+    <p>[click] Never half-advanced state, never a corrupt apply: staging is hashed on arrival, so a torn transfer is a <strong>retry</strong>, not a corruption.</p>
+  </aside>
+</section>
+
+<!-- ═══ 10 · DELETES NEED EVIDENCE ═══ -->
+<section class="slide" data-seconds="50" data-coach="This is the safety slide. Land 'no-base never deletes' slowly.">
+  <p class="kicker">The engine · honesty about deletion</p>
+  <h2>Deletion needs positive evidence — the guard halts and demands a human.</h2>
+  <div class="stage" aria-hidden="true">
+    <div class="opts3">
+      <div class="opt" data-step="1"><h3>Mass deletion</h3><p>A bad pair key or a stale tree looks exactly like "the user deleted everything."</p><span class="verdict" style="border-color:var(--amber); color:var(--amber);">pass halts · human required</span></div>
+      <div class="opt" data-step="2"><h3>Corrupt archive</h3><p>Undecodable, version-mismatched, or foreign — even its <b>.bak</b> gone.</p><span class="verdict" style="border-color:var(--amber); color:var(--amber);">safe no-base · deletes disabled</span></div>
+      <div class="opt" data-step="3"><h3>Empty overwrite</h3><p>A scan that sees nothing never becomes "delete the world" — the M6 guard refuses.</p><span class="verdict" style="border-color:var(--amber); color:var(--amber);">refused at the engine</span></div>
+    </div>
+    <p class="say" data-step="4"><b>No-base never deletes.</b> Deletion needs positive evidence.</p>
+  </div>
+  <p class="foot">M6 hardening · the chaos gate, ARCHITECTURE.md §failure semantics.</p>
+  <aside class="notes">
+    <p>And deletion — the dangerous direction. A bad pair key or a stale tree looks exactly like <strong>"the user deleted everything."</strong></p>
+    <p>[click] So deletion needs positive evidence. The mass-deletion guard <strong>halts the pass and demands a human</strong>.</p>
+    <p>[click] A corrupt archive — even with its backup gone — loads as <strong>no base</strong>: a full rescan with deletes disabled. And an empty scan can't become "delete the world"; the M6 guard refuses it.</p>
+    <p>[click] Boring? Good. <strong>No-base never deletes</strong> — this is the part you never have to think about.</p>
+  </aside>
+</section>
+
+<!-- ═══ 11 · CHECKPOINT: THE ENGINE ═══ -->
+<section class="slide" data-seconds="30" data-checkpoint="The engine" data-coach="Recap in one breath, then move. The tunnel is the crowd-pleaser.">
+  <p class="kicker">Checkpoint · the engine</p>
+  <h2>Two disks, one archive, honest reconciliation.</h2>
+  <div class="stage" aria-hidden="true">
+    <div class="mstones">
+      <span data-step="1" style="--d:0s">blake3 scan</span>
+      <span data-step="1" style="--d:.08s">3-way vs ancestor</span>
+      <span data-step="1" style="--d:.16s">conflicts staged for humans</span>
+      <span data-step="1" style="--d:.24s">no clock trust</span>
+      <span data-step="1" style="--d:.32s">no partial truth</span>
+      <span data-step="1" style="--d:.4s">deletes need evidence</span>
+    </div>
+    <p class="say" data-step="2">Now — how the bytes actually travel.</p>
+  </div>
+  <p class="foot">Recap · five mechanisms, one rule: never lie to either disk.</p>
+  <aside class="notes">
+    <p>That's the engine: blake3 scans, three-way reconcile against the archive, conflicts staged for a human, clocks never trusted, deletion never guessed.</p>
+    <p>[click] Now — how the bytes actually travel.</p>
+  </aside>
+</section>
+
+<!-- ═══ 12 · TRANSPORT LADDER ═══ -->
+<section class="slide" data-seconds="65" data-coach="Egress people care about beat 1; security people care about beat 4. Give each its beat.">
+  <p class="kicker">The transport · P2P ladder</p>
+  <h2>One outbound dial, zero inbound listeners — the relay is untrusted.</h2>
+  <div class="stage tdiag" aria-hidden="true">
+    <svg viewBox="0 0 1152 392">
+      <defs><marker id="arr-t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="11" markerHeight="11" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0 L10 5 L0 10 z"/></marker></defs>
+      <g class="trelay">
+        <rect class="tnode rl" x="406" y="18" width="340" height="92" rx="14"/>
+        <text class="ttitle" x="576" y="52">sync-relay · VPS</text>
+        <text class="tsub" x="576" y="80">rendezvous + circuit relay · untrusted</text>
+      </g>
+      <rect class="tnode lt" x="30" y="246" width="270" height="100" rx="14"/>
+      <text class="ttitle" x="165" y="286">💻 laptop</text>
+      <text class="tsub" x="165" y="314">sync daemon · dials OUT</text>
+      <rect class="tnode ag" x="852" y="246" width="270" height="100" rx="14"/>
+      <text class="ttitle" x="987" y="286">📦 sandbox agent</text>
+      <text class="tsub" x="987" y="314">sync-agent p2p · no listener</text>
+      <path class="tdial" data-step="1" marker-end="url(#arr-t)" d="M165 246 C 165 168, 250 110, 436 110"/>
+      <path class="tdial" data-step="1" style="--d:.15s" marker-end="url(#arr-t)" d="M987 246 C 987 168, 902 110, 716 110"/>
+      <text class="tsub" data-step="1" x="330" y="178">dials OUT</text>
+      <text class="tsub" data-step="1" x="822" y="178">dials OUT</text>
+      <text class="tnoise" data-step="2" x="576" y="152">noise + yamux · first bytes ride the circuit</text>
+      <path class="tdirect draw" data-step="3" pathLength="1" d="M300 296 C 460 206, 692 206, 852 296"/>
+      <text class="tdlabel" data-step="3" x="576" y="216">DCUtR punch → direct · the stream migrates</text>
+      <text class="tid" data-step="4" x="576" y="378">PeerId = derive(master key, sandbox id) · pinned TOFU</text>
+    </svg>
+    <div class="tdiag-badges">
+      <span class="badge" data-step="1">one egress allowance</span>
+      <span class="badge encrypted" data-step="2">relay sees ciphertext only</span>
+      <span class="badge direct" data-step="3">direct = bonus · relay stays the fallback</span>
+      <span class="badge" data-step="4">no enrollment service to attack</span>
+    </div>
+  </div>
+  <p class="foot">libp2p over TCP · noise · yamux · DCUtR · untrusted VPS relay — ARCHITECTURE.md §transport ladder.</p>
+  <aside class="notes">
+    <p>Transport. Neither side ever listens inbound — everything is an <strong>outbound dial</strong>, so cluster egress policy needs exactly one allowance: the VPS.</p>
+    <p>[click] The rendezvous and circuit relay live on an untrusted VPS. The first bytes ride the relayed circuit, wrapped in <strong>noise</strong> end to end — the relay sees ciphertext and nothing else.</p>
+    <p>[click] Then DCUtR tries to punch a direct path. When it lands, the sync stream <strong>migrates</strong> and the circuit is torn down. When NAT wins, it stays relayed — the fallback is a data path, not a failure.</p>
+    <p>[click] And identity is <strong>derived, not enrolled</strong>: the peer id comes from the master key and the sandbox id, pinned on first contact. There's no enrollment service to attack.</p>
+  </aside>
+</section>
+
+<!-- ═══ 13 · THE MEMORY TUNNEL (PLAY.tunnel) ═══ -->
+<section class="slide" data-play="tunnel" data-tools="memory_search|memory_store|sync_history|memory_search|memory_store" data-allowed="memory_search|memory_store" data-seconds="65" data-coach="Let a refusal land before the spool step. 'One status byte and a clean close, never a hang' is the line.">
+  <p class="kicker">The tunnel · memory broker</p>
+  <h2>The agent gets my memory.</h2>
+  <div class="stage tun" aria-hidden="true">
+    <div class="tcard src"><span class="tag"><b>OpenCode · sandbox</b></span><div class="treqs"></div></div>
+    <div class="twire"><span class="wtag">127.0.0.1:7402<br>tunnel/1</span><div class="wline"></div></div>
+    <div class="tcard gate"><span class="tag"><b>allowlist · default-deny</b></span>
+      <ul class="tallow"><li>memory_search</li><li>memory_store</li></ul>
+      <p class="tdeny">unlisted → one status byte + clean close</p>
+      <div class="tspool"><span class="tag">spool · per-service .jsonl</span><div class="tsp"></div></div>
+      <div class="tref"><b>0</b><span class="tag">refusals</span></div>
+    </div>
+    <div class="twire"><div class="wline"></div><span class="wtag">raw pipe</span></div>
+    <div class="tcard dst"><span class="tag"><b>memory MCP · 7999</b></span><div class="tlive"></div></div>
+    <div class="tsteps" aria-hidden="true">
+      <p class="say" data-step="1" data-until="2">The allowlist <b>is</b> the policy — default-deny, daemon-side.</p>
+      <p class="say swap-in" data-step="2" data-until="3">Link down: <b>writes spool</b> (FIFO), reads fail fast to a clean miss.</p>
+      <p class="say swap-in" data-step="3">Reconnect: the spool <b>flushes FIFO</b> — idempotent, the store is content-addressed.</p>
+    </div>
+  </div>
+  <p class="foot">M5 memory access broker · allowlist lives in the daemon config, not the sandbox · agent listener 7402, memory MCP 7999.</p>
+  <aside class="notes">
+    <p>Now the part that makes the sandbox feel like home. The laptop runs the <strong>memory MCP</strong> — the store my agents think with. The tunnel carries it to the sandbox's loopback, so the agent calls memory_store and memory_search <strong>like local tools</strong>.</p>
+    <p>[click] The allowlist is <strong>default-deny</strong> and lives in the daemon's config — an agent cannot opt itself into a service. Anything unlisted gets <strong>one status byte and a clean close</strong>, never a hang.</p>
+    <p>[click] When the link is down, writes spool to a JSONL file the scanner skips — answered honestly: <strong>write spooled</strong>. Reads fail fast to a clean miss.</p>
+    <p>[click] On reconnect the spool flushes FIFO — <strong>idempotent</strong>, because the store is content-addressed. This is the broker pattern: tomorrow's laptop service is a new allowlist entry.</p>
+  </aside>
+</section>
+
+<!-- ═══ 14 · CONTROL PLANE ═══ -->
+<section class="slide" data-seconds="50" data-coach="Emphasize 'files, not APIs' — it's the trick that keeps this debuggable.">
+  <p class="kicker">The control plane · sandbox MCP</p>
+  <h2>The agent sees and steers its own sync — through files, not APIs.</h2>
+  <div class="stage" aria-hidden="true">
+    <div class="cases">
+      <div class="case" data-step="1"><span class="when">daemon → sandbox</span><span class="then">writes <span class="mono">sync-state.json</span></span><p class="how">the agent's MCP reads it: pass phases, conflicts, tunnel health — status, not bulk data</p></div>
+      <div class="case" data-step="2"><span class="when">sandbox → daemon</span><span class="then">agent writes <span class="mono">control-requests.json</span></span><p class="how">pause · resume · resolve a conflict · add an ignore — the next pass fetches and honors them</p></div>
+    </div>
+    <div class="mkey" data-step="3" style="margin-top:14px;">
+      <span class="tag">6 stdio tools:</span>
+      <span class="mono">sync_status</span><span class="mono">sync_pause</span><span class="mono">sync_resume</span><span class="mono">sync_resolve_conflict</span><span class="mono">sync_now</span><span class="mono">sync_ignore_add</span>
+    </div>
+  </div>
+  <p class="foot">crates/agent mcp · control types in crates/proto · no bulk file data ever rides the control plane.</p>
+  <aside class="notes">
+    <p>The agent can also steer the sync itself. The daemon writes a state file; the sandbox MCP reads it — phases, conflicts, tunnel health.</p>
+    <p>[click] The agent writes control requests back — pause, resume, resolve a conflict, add an ignore. The next pass <strong>fetches and honors</strong> them.</p>
+    <p>[click] Note what this is: <strong>files, not APIs</strong>. You can debug it with cat. And no bulk file data ever rides the control plane — the data path and the control path never mix.</p>
+  </aside>
+</section>
+
+<!-- ═══ 15 · SELF-MANAGING AGENTS ═══ -->
+<section class="slide" data-seconds="50" data-coach="The drift story is the one that matters: sandboxes get rebuilt, the agent heals.">
+  <p class="kicker">Operations · self-managing agents</p>
+  <h2>The daemon installs, upgrades, and health-checks the agent — every pass.</h2>
+  <div class="stage" aria-hidden="true">
+    <ol class="hops">
+      <li class="hop" data-step="1"><span class="n">1</span><p><b>First pass</b>: the daemon bootstraps the agent onto the PVC over <span class="mono">oc exec</span> — binary + derived identity.</p></li>
+      <li class="hop" data-step="2"><span class="n">2</span><p>Every pass after: <b>version drift → re-provision</b>. Agent dirs are versioned, <span class="mono">current</span> symlink swapped, old ones GC'd.</p></li>
+      <li class="hop" data-step="3"><span class="n">3</span><p>Health per pass: the dashboard surfaces <b>version, tunnel args, MCP health</b> per target.</p></li>
+    </ol>
+    <p class="say" data-step="4">A sandbox rebuilt yesterday converges back to the daemon's version — <b>without anyone looking</b>.</p>
+  </div>
+  <p class="foot">Versioned agent dirs, GC'd on install · install-versioning fix in M6.</p>
+  <aside class="notes">
+    <p>None of this is hand-set up. On the first pass the daemon bootstraps the agent onto the PVC over <strong>oc exec</strong> — binary and derived identity.</p>
+    <p>[click] After that, every pass checks the agent's version against the daemon's. Drift means <strong>re-provision</strong>. Agent directories are versioned and garbage-collected on install.</p>
+    <p>[click] Health is checked per pass, and the dashboard surfaces version, tunnel arguments, and MCP health per target.</p>
+    <p>[click] The point: a sandbox rebuilt yesterday <strong>converges back</strong> to the daemon's version without anyone looking.</p>
+  </aside>
+</section>
+
+<!-- ═══ 16 · DASHBOARD ═══ -->
+<section class="slide" data-seconds="45" data-coach="Give the screenshot five seconds of silence — it sells itself.">
+  <p class="kicker">Operations · the dashboard</p>
+  <h2>A real dashboard — with a dry-run before you trust it.</h2>
+  <div class="stage" aria-hidden="true">
+    <div class="shotframe fit" data-step="0">
+      <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="tag">sync-agent daemon · 127.0.0.1:7391</span></div>
+      <img src="dashboard-targets.png" alt="Dashboard: memory tunnel banner with p2p and relayed badges, two live sync target cards">
+    </div>
+    <div class="mkey" data-step="1" style="margin-top:12px;">
+      <span class="tag">also:</span>
+      <span class="mono">attach wizard</span><span class="mono">dry-run preview</span><span class="mono">live phases</span><span class="mono">conflicts</span><span class="mono">refusals</span><span class="mono">tunnel state</span>
+    </div>
+  </div>
+  <p class="foot">PatternFly UI vendored into the daemon binary · localhost only · screenshot: docs/screenshots.</p>
+  <aside class="notes">
+    <p>It ships with a real dashboard — PatternFly, <strong>vendored into the daemon binary</strong>, localhost only. Live phases, conflicts, refusals, tunnel state.</p>
+    <p>[click] And the attach wizard previews a <strong>dry-run</strong> before you point it at a directory you care about. Trust, but preview.</p>
+  </aside>
+</section>
+
+<!-- ═══ 17 · STATUS (checkpoint) ═══ -->
+<section class="slide" data-seconds="40" data-checkpoint="Status" data-coach="Read the strip left to right, one breath. The chaos gate is the receipt for M6.">
+  <p class="kicker">Status · November 2026</p>
+  <h2>M0 through M7: shipped, tested, hardened.</h2>
+  <div class="stage" aria-hidden="true">
+    <div class="mstones">
+      <span data-step="1" style="--d:0s">M0.0 <small>cluster prep</small></span>
+      <span data-step="1" style="--d:.06s">M0 <small>spikes</small></span>
+      <span data-step="1" style="--d:.12s">M1 <small>engine</small></span>
+      <span data-step="1" style="--d:.18s">M2 <small>wire + agent</small></span>
+      <span data-step="1" style="--d:.24s">M3 <small>P2P</small></span>
+      <span data-step="1" style="--d:.3s">M3.5 <small>control MCP</small></span>
+      <span data-step="1" style="--d:.36s">M4 <small>dashboard</small></span>
+      <span data-step="1" style="--d:.42s">M5 <small>memory broker</small></span>
+      <span data-step="1" style="--d:.48s">M6 <small>hardening</small></span>
+      <span data-step="1" style="--d:.54s">M7 <small>docs</small></span>
+    </div>
+    <div style="display:flex; align-items:baseline; gap:16px; margin-top:26px;" data-step="2">
+      <b class="huge" style="font-size:96px; color:var(--green);">280+</b>
+      <span class="plain">tests green · clippy clean · the M6 <b>chaos gate</b> throws kill −9, corrupt archives, clock skew, and mass deletions at it</span>
+    </div>
+  </div>
+  <p class="foot">Repo README status table, Nov 2026 · plan of record: ~/.opencode/plan/sync-agent-pvc.md (local).</p>
+  <aside class="notes">
+    <p>Where it stands: every milestone from cluster prep through hardening and docs is <strong>done</strong>.</p>
+    <p>[click] And the receipt for M6: a chaos gate that throws <strong>kill −9, corrupt archives, clock skew, and mass deletions</strong> at the engine. 280-plus tests green, clippy clean.</p>
+  </aside>
+</section>
+
+<!-- ═══ 18 · CLOSE ═══ -->
+<section class="slide title end" data-seconds="38" data-coach="Leave the slide up while people scan. The FAQ link absorbs the hard questions.">
+  <p class="kicker">Your Laptop Is the Durable Tier</p>
+  <h1>Two real disks.<br>One honest protocol.</h1>
+  <p class="lede">sync-agent-pvc — the laptop stays the durable tier; sandboxes come and go.</p>
+  <div class="eq" data-step="1" style="display:flex; gap:22px; align-items:center;">
+    <span style="background:#fff; border:1px solid var(--line); border-radius:10px; padding:10px; display:inline-block;"><img src="qr-pages.svg" alt="QR code linking to the sync-agent-pvc documentation site" style="width:132px; height:132px; display:block;"></span>
+    <span style="font-family:var(--mono); font-size:19px; color:var(--ink); text-align:left;">eformat.github.io/sync-agent-pvc<br><span style="color:var(--mute);">design FAQ · the full NFS roast · ARCHITECTURE.md</span></span>
+  </div>
+  <p class="byline"><b>eformat</b></p>
+  <aside class="notes">
+    <p>The laptop is the durable tier. The sandbox is a working set. Between them: <strong>one honest protocol</strong>. [pause 3s: leave the slide up while people scan]</p>
+    <p>[click] The design FAQ has the full NFS roast with receipts. Thank you — find me in the hallway for the hard questions.</p>
+  </aside>
+</section>
+
+<!-- ═══ BACKUPS (no data-seconds — presenter counts them as references) ═══ -->
+
+<section class="slide backup" data-coach="Only if someone says 'you reinvented NFS'.">
+  <p class="kicker">Backup · the NFS roast</p>
+  <h2>"You just reinvented NFS" — the full answer.</h2>
+  <div class="stage quotes" aria-hidden="true">
+    <div class="quote"><p>"You just reinvented NFS."</p><p class="who">— Noel, opening question</p></div>
+    <div class="quote answer"><p>NFS answers "where do the files live?" — one place, and you go to them. We answer: the files live in <b>two places</b>, the network between them is <b>hostile</b>, and here's the protocol for them to converge anyway.</p></div>
+    <div class="mkey" style="margin-top:6px;">
+      <span class="ky w"></span> both copies real &amp; local — tools run at disk speed on both sides
+      <span class="ky attn" style="margin-left:14px;"></span> unmount ≠ data loss · cluster rebuild ≠ migration
+    </div>
+  </div>
+  <p class="foot">docs/design-faq.md · the full roast with live receipts.</p>
+  <aside class="notes"><p>Only open this if someone pushes the NFS comparison.</p></aside>
+</section>
+
+<section class="slide backup" data-coach="The chaos gate table — show it when trust is questioned.">
+  <p class="kicker">Backup · failure semantics</p>
+  <h2>The chaos gate: every failure, and what the system does.</h2>
+  <div class="stage" aria-hidden="true">
+    <table class="ftable">
+      <thead><tr><th>Failure</th><th>Behavior</th></tr></thead>
+      <tbody>
+        <tr><th>Daemon killed mid-pass</th><td>staged temps only · archive not advanced · next pass re-plans the remainder</td></tr>
+        <tr><th>Agent/pod killed mid-transfer</th><td>staging hashed on arrival · digest mismatch = retry, never a corrupt apply</td></tr>
+        <tr><th>Corrupt archive (and its .bak)</th><td><b>safe no-base</b>: full rescan, deletes disabled, archive re-seeded</td></tr>
+        <tr><th>Cluster / API outage</th><td>pass errors are per-target · laptop unaffected · resumes when reachable</td></tr>
+        <tr><th>Mass deletion</th><td><b class="halt">guard halts the pass</b> and demands a human</td></tr>
+        <tr><th>Tunnel down</th><td>writes spool (FIFO, idempotent) · reads miss cleanly · flush converges on reconnect</td></tr>
+        <tr><th>Unknown service / stranger peer</th><td>one status byte + clean close · counted in /api/tunnel refusals</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="foot">M6 chaos gate · ARCHITECTURE.md §failure semantics.</p>
+  <aside class="notes"><p>The whole failure table in one place.</p></aside>
+</section>
+
+<section class="slide backup" data-coach="State layout — for the 'where does the state actually live' question.">
+  <p class="kicker">Backup · state layout</p>
+  <h2>Where everything lives.</h2>
+  <div class="stage" aria-hidden="true">
+    <dl class="kit" style="position:static; margin-top:10px;">
+      <dt>laptop</dt><dd>~/.local/state/sync-agent-pvc/pairs/&lt;pair-hash&gt;/ — ancestor archive + scan caches</dd>
+      <dt>laptop</dt><dd>~/.config/sync-agent-pvc/config.toml · master key, 0600</dd>
+      <dt>sandbox</dt><dd>/sandbox/.sync-agent/agents/&lt;version&gt;/ — versioned binaries, current symlink, GC'd</dd>
+      <dt>sandbox</dt><dd>/sandbox/.sync-agent/agent/&lt;hash&gt;/ — digest-keyed staging</dd>
+      <dt>both</dt><dd>&lt;root&gt;/.sync-agent/ — scanner-skipped: control files, tunnel spool · .syncignore lives beside it</dd>
+    </dl>
+  </div>
+  <p class="foot">ARCHITECTURE.md §state layout · .syncignore is synced content — edit it on either side.</p>
+  <aside class="notes"><p>For anyone who wants to know where the bodies are buried. There are none — it's all content-addressed.</p></aside>
+</section>
+
+<section class="slide backup" data-coach="Config — hand this to someone who wants to run it tomorrow.">
+  <p class="kicker">Backup · configuration</p>
+  <h2>The whole laptop config, for one target.</h2>
+  <div class="stage" aria-hidden="true">
+    <pre class="code dump" data-step="0"># ~/.config/sync-agent-pvc/config.toml
+[daemon]
+bind = "127.0.0.1:7391"          # dashboard + API, localhost only
+
+[tunnel]
+enabled = true
+
+[[tunnel.services]]              # the default-deny allowlist
+name = "memory"
+upstream = "http://127.0.0.1:7999"   # the laptop's memory MCP
+agent_port = 7402
+spool_tools = ["memory_store", "memory_delete"]
+
+[[targets]]
+name = "plan"
+sandbox = "sync-oc+plan"             # matches the agent's --sandbox-id
+root = "~/code/plan"                 # laptop side
+root_remote = "/sandbox/.opencode/plan"  # PVC side
+transport = "p2p"
+relay = "/ip4/VPS/tcp/4001/p2p/RELAY_PEER"
+tunnel_services = ["memory"]         # opt this target into the tunnel</pre>
+  </div>
+  <p class="foot">README quickstart · the sandbox side needs no manual setup — the daemon bootstraps it on the first pass.</p>
+  <aside class="notes"><p>The whole config for one target. The sandbox side is zero-touch.</p></aside>
+</section>
+
+<section class="slide backup" data-coach="Crate map — for the architecture-audience question.">
+  <p class="kicker">Backup · code map</p>
+  <h2>One Rust workspace, four crates.</h2>
+  <div class="stage crates" aria-hidden="true">
+    <div class="crate"><h3>crates/proto</h3><p>Wire framing: MAGIC handshake, bounded-length CBOR/bincode frames · tunnel protocol · control types.</p><p class="deps">deps: none</p></div>
+    <div class="crate"><h3>crates/core</h3><p>Sync engine: blake3 scan · 3-way reconcile · ancestor archive · excludes (vendored copia cores).</p><p class="deps">deps: <b>proto</b></p></div>
+    <div class="crate"><h3>crates/agent</h3><p>Remote agent: serve (exec/stdio) · p2p driver · tunnel client + spool · MCP server · self-installing binaries.</p><p class="deps">deps: <b>proto</b></p></div>
+    <div class="crate"><h3>crates/cli</h3><p>Laptop daemon: per-target pass loops · localhost API + vendored PatternFly UI · P2P/exec transports · tunnel service + allowlist.</p><p class="deps">deps: <b>core → proto</b></p></div>
+  </div>
+  <p class="foot">Rust 2024, one workspace · 280+ tests green · clippy clean.</p>
+  <aside class="notes"><p>Four crates, no framework. The engine never talks to the network; the agent never owns policy.</p></aside>
+</section>
+
+<section class="slide backup" data-coach="Cluster prep — the 'how do I deploy this' question.">
+  <p class="kicker">Backup · cluster prep</p>
+  <h2>Cluster prep is a runbook, not a project.</h2>
+  <div class="stage" aria-hidden="true">
+    <ol class="rules3" data-step="0">
+      <li><span>OpenShell on OpenShift via <b>GitOps chart</b> — <span class="mono">deploy/chart/</span>, rebuilt any afternoon by design.</span></li>
+      <li><span><b>SCC + Route</b> for the sandbox pod; the dashboard never leaves localhost.</span></li>
+      <li><span><b>Egress</b>: exactly <b>one outbound allowance</b> — the VPS relay. No inbound paths, ever.</span></li>
+    </ol>
+  </div>
+  <p class="foot">docs/m0.0-runbook.md · deploy/chart/ · OpenShell on ocp5-1.</p>
+  <aside class="notes"><p>Three steps, one runbook. The egress line is the same one from the transport slide.</p></aside>
+</section>
+
+</main>
+
+<!-- Presenter shell — deck.js fills the notes, clock, checkpoints and iframes. -->
+<div id="presenter" hidden>
+  <header class="pv-toolbar">
+    <div><h1 id="pv-title">Speaker script</h1><p id="pv-pos"></p></div>
+    <nav class="pv-controls" aria-label="Presentation controls">
+      <button type="button" id="pv-open">Open presentation</button>
+      <button type="button" id="pv-prev">Previous step</button>
+      <button type="button" id="pv-next">Next step</button>
+    </nav>
+  </header>
+  <div class="pv-script">
+    <div class="pv-follow">
+      <button type="button" id="pv-follow-toggle" aria-controls="pv-notes">Start highlighting</button>
+      <label for="pv-pace">Pace <select id="pv-pace"><option value="120">120 wpm</option><option value="130" selected>130 wpm</option><option value="140">140 wpm</option><option value="150">150 wpm</option></select></label>
+      <span id="pv-follow-status">Paused · click a sentence to resync</span>
+    </div>
+    <div class="pv-notes" id="pv-notes" tabindex="0" role="region" aria-label="Script for the current slide"></div>
+  </div>
+  <aside class="pv-side" aria-label="Slide previews and pacing">
+    <div class="pv-clock">
+      <div><span>Talk elapsed</span><div class="pv-gauge"><svg viewBox="0 0 100 100" aria-hidden="true"><circle class="pv-track" cx="50" cy="50" r="43"/><path id="pv-progress" d="M93 50 A43 43 0 1 1 7 50 A43 43 0 1 1 93 50" pathLength="2100"/><circle class="pv-deck-track" cx="50" cy="50" r="34" pathLength="2100"/><circle id="pv-slide-window" cx="50" cy="50" r="34" pathLength="2100"/><path class="pv-target" d="M32.8 4.9 L36.4 14.5"/></svg><b id="pv-time" role="timer" aria-label="Elapsed presentation time">00:00</b></div></div>
+      <div class="pv-clock-controls"><button type="button" id="pv-clock-toggle">Start timer</button><button type="button" id="pv-reset">Reset timer</button></div>
+      <div class="pv-clock-copy"><b id="pv-slide-range"></b><strong id="pv-pace-state"></strong><span id="pv-plan"></span></div>
+      <span class="pv-limit">Hard stop: data-hard-stop on #deck · start the timer when you begin</span>
+    </div>
+    <div class="pv-now"><h2>On screen</h2><iframe id="pv-cur" title="current slide"></iframe></div>
+    <div class="pv-next"><h2>Next step</h2><iframe id="pv-nxt" title="next step"></iframe></div>
+    <details class="pv-pacing" open>
+      <summary>Live pacing targets</summary>
+      <dl id="pv-checkpoints"></dl>
+      <p>Waypoints: slides with data-checkpoint="Label". Start the timer when you begin speaking. Highlighting has its own pause control.</p>
+    </details>
+  </aside>
+  <footer class="pv-footer"><span id="pv-status" role="status">Open the presentation and move it to your audience display.</span><span>Arrows: step · Shift + arrows: slide · H: highlighting · T: reset timer · D: theme</span></footer>
+</div>
+
+<script src="deck.js"></script>
+<script>
+// ── sync-agent-pvc deck: two bespoke PLAY loops (skill: references/components.md
+//    § "Writing a new PLAY loop"). Content comes from slide data attributes;
+//    still mode draws the finished frame for print / reduced-motion / previews. ──
+(() => {
+  const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+  // bisync — one classified op per tick against the ancestor archive.
+  // data-ops="l|r|c|n…" (laptop-changed / pvc-changed / conflict / no-op).
+  PLAY.bisync = (slide, still) => {
+    const lane = slide.querySelector(".bops");
+    const gl = slide.querySelector(".btree.laptop .bgrid");
+    const gr = slide.querySelector(".btree.pvc .bgrid");
+    const ag = slide.querySelector(".barchive .agrid");
+    const ap = slide.querySelector(".bap"), cf = slide.querySelector(".bcf"), no = slide.querySelector(".bno");
+    const ops = (slide.dataset.ops ?? "l|r|n|r|c|l|n|r|l|c|r|n").split("|");
+    const LABEL = { l: "A changed → copy →", r: "← copy ← B changed", c: "both changed → conflict", n: "identical → no-op" };
+    const OP_MS = 1100, HOLD_MS = 2800, FIRST_MS = 700;
+    let n = 0, timer = 0, counts = { a: 0, c: 0, n: 0 };
+    const cell = (g, cls) => {
+      const free = [...g.children].filter((i) => !i.className);
+      const el = free.length ? pick(free) : pick([...g.children]);
+      el.classList.add(cls);
+      return el;
+    };
+    const row = (cls, txt) => {
+      const s = document.createElement("span");
+      s.className = cls; s.textContent = txt;
+      lane.appendChild(s);
+      while (lane.children.length > 6) lane.firstElementChild.remove();
+      if (!still) requestAnimationFrame(() => requestAnimationFrame(() => s.classList.add("on")));
+      else s.classList.add("on");
+      return s;
+    };
+    const apply = (op) => {
+      if (op === "l") { counts.a++; ap.textContent = counts.a; cell(gl, "chg"); cell(gr, "win"); row("hot", LABEL.l); }
+      else if (op === "r") { counts.a++; ap.textContent = counts.a; cell(gr, "chg"); cell(gl, "win"); row("hot", LABEL.r); }
+      else if (op === "c") { counts.c++; cf.textContent = counts.c; cell(gl, "conf"); cell(gr, "conf"); row("cold", LABEL.c); }
+      else { counts.n++; no.textContent = counts.n; row("dim", LABEL.n); }
+    };
+    if (still) {
+      for (const op of ops) apply(op);
+      ag.querySelectorAll("i").forEach((el) => el.classList.add("lit"));
+      return () => {};
+    }
+    // entry: a scan pulse crosses both trees, then ops run
+    const pulse = () => { [...gl.children, ...gr.children].forEach((el, k) => { el.classList.add("scan"); setTimeout(() => el.classList.remove("scan"), 900); }); };
+    const step = () => {
+      if (n >= ops.length) { // pass complete: the archive advances
+        ag.querySelectorAll("i").forEach((el, k) => { el.classList.remove("lit"); setTimeout(() => el.classList.add("lit"), k * 22); });
+        timer = setTimeout(() => {
+          ag.querySelectorAll("i").forEach((el) => el.classList.remove("lit"));
+          n = 0; counts = { a: 0, c: 0, n: 0 };
+          ap.textContent = cf.textContent = no.textContent = "0";
+          timer = setTimeout(step, 500);
+        }, HOLD_MS);
+        return;
+      }
+      apply(ops[n++]);
+      timer = setTimeout(step, OP_MS);
+    };
+    pulse();
+    timer = setTimeout(step, FIRST_MS);
+    return () => clearTimeout(timer);
+  };
+
+  // tunnel — request chips hit the default-deny gate; writes spool offline, flush FIFO on reconnect.
+  // data-tools="a|b|…" · data-allowed="a|b" · steps: ≥2 offline, ≥3 reconnect+flush.
+  PLAY.tunnel = (slide, still) => {
+    const reqs = slide.querySelector(".treqs");
+    const live = slide.querySelector(".tlive");
+    const refEl = slide.querySelector(".tref b");
+    const sp = slide.querySelector(".tsp");
+    const tools = (slide.dataset.tools ?? "memory_search|memory_store|sync_history|memory_search|memory_store").split("|");
+    const allowed = new Set((slide.dataset.allowed ?? "memory_search|memory_store").split("|"));
+    const WRITES = new Set(["memory_store", "memory_delete", "memory_update"]);
+    const TICK_MS = 1500, FLY_MS = 420, FIRST_MS = 600;
+    let n = 0, timer = 0, refusals = 0, offline = false, flushed = false;
+    const chip = (cls, txt) => {
+      const el = document.createElement("span");
+      el.className = "trq"; el.textContent = txt;
+      reqs.appendChild(el);
+      while (reqs.children.length > 5) reqs.firstElementChild.remove();
+      if (still) { el.classList.add("on", cls); return el; }
+      requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add("on")));
+      setTimeout(() => el.classList.add(cls), FLY_MS);
+      return el;
+    };
+    const note = (txt) => {
+      const el = document.createElement("span");
+      el.textContent = txt;
+      live.appendChild(el);
+      while (live.children.length > 4) live.firstElementChild.remove();
+    };
+    const tick = () => {
+      const tool = tools[n++ % tools.length];
+      if (offline) {
+        if (WRITES.has(tool)) { chip("sp", tool + "() → write spooled"); const i = document.createElement("i"); sp.appendChild(i); note("offline · write spooled (FIFO)"); }
+        else chip("dim", tool + "() → clean miss");
+      } else if (allowed.has(tool)) {
+        chip("ok", tool + "()");
+        setTimeout(() => note(tool + " → 200 · the laptop store answers"), FLY_MS);
+      } else {
+        chip("no", tool + "() → refused");
+        refusals++; refEl.textContent = refusals;
+      }
+      timer = setTimeout(tick, TICK_MS);
+    };
+    const flush = () => {
+      if (flushed || !sp.children.length) return;
+      flushed = true;
+      const cells = [...sp.children]; const count = cells.length;
+      cells.forEach((el, k) => setTimeout(() => { el.remove(); if (k === cells.length - 1) { note("reconnected · spool flushed ×" + count + " · idempotent"); chip("ok", "memory_store() ×" + count + " replayed"); } }, k * 160));
+    };
+    slide.onStep = () => {
+      const k = Number(slide.dataset.k);
+      if (k >= 3) { offline = false; flush(); }
+      else if (k === 2) offline = true;
+      else offline = false;
+    };
+    if (still) { // one representative mid-state: a hit, a refusal, a spool under the gate
+      chip("ok", "memory_search()");
+      chip("no", "sync_history() → refused");
+      refEl.textContent = "1";
+      sp.append(Object.assign(document.createElement("i"), {}), Object.assign(document.createElement("i"), {}));
+      note("memory_search → 200 · the laptop store answers");
+      note("offline · write spooled (FIFO)");
+      return () => { slide.onStep = null; };
+    }
+    const k0 = Number(slide.dataset.k);
+    offline = k0 === 2;
+    timer = setTimeout(tick, FIRST_MS);
+    if (k0 >= 3) { offline = false; setTimeout(flush, FIRST_MS); }
+    return () => { clearTimeout(timer); slide.onStep = null; };
+  };
+})();
+</script>
+</body>
+</html>
