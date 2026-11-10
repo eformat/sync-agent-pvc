@@ -64,6 +64,10 @@ export interface SandboxStatus {
   mcp_config: boolean;
   /** The target's remote root exists. */
   root_ok: boolean;
+  /** M8: an `opencode serve` for this root is alive (the attach path). */
+  serve_ok?: boolean;
+  /** M8: the port this target's serve listens on (deterministic per target). */
+  serve_port?: number;
 }
 
 /** GET /api/tunnel — the service tunnel's live state. */

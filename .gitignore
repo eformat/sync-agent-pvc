@@ -18,3 +18,5 @@ Makefile.local
 # until `npm run build` runs; dist/ is embedded at compile time)
 crates/cli/ui/node_modules/
 crates/cli/ui/dist/
+
+.kube/

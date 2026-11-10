@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# oattach — attach a laptop opencode TUI to the sandbox's `opencode serve`
+# (M8). The TUI runs LOCALLY, so clipboard paste/copy work natively (Wayland
+# data-control); attachments ride the openshell forward to the pod server.
+#
+# usage: oattach [target-name] [local-port]
+#   target-name defaults to the first serve-capable p2p target the daemon
+#   knows about (127.0.0.1:7391 is the single source of truth for
+#   target → sandbox + serve port).
+#
+# Requirements: sync-agent daemon running, openshell CLI logged in
+# (`openshell gateway login openshift`), opencode on the laptop.
+#
+# Secrets discipline: the serve password is pulled from the pod's serve log
+# INTO an env assignment (never argv, never a file). If the forward dies with
+# `invalid token: ExpiredSignature`, re-login and re-run — the p2p sync and
+# the memory tunnel are unaffected by that expiry.
+set -euo pipefail
+
+API="${SYNC_AGENT_API:-http://127.0.0.1:7391}"
+TARGET="${1:-}"
+LPORT="${2:-}"
+
+read -r SBX SPORT TNAME < <(curl -fsS "$API/api/targets" | TARGET="$TARGET" python3 -c '
+import json, os, sys
+d = json.load(sys.stdin)
+ts = d if isinstance(d, list) else d.get("targets", [])
+want = os.environ.get("TARGET", "")
+cands = [t for t in ts if (not want or t.get("name") == want)]
+cands = [t for t in cands if (t.get("sandbox_status") or {}).get("serve_port")]
+if not cands:
+    sys.stderr.write("oattach: no serve-capable p2p target found — is the daemon up and the target synced once?\n")
+    sys.exit(3)
+t = cands[0]
+st = t["sandbox_status"]
+sbx = (t.get("sandbox") or "").split("+")[0] or t.get("sandbox", "")
+print(sbx, st["serve_port"], t["name"])
+')
+[ -n "${SBX:-}" ] || exit 3
+SPORT="${LPORT:-$SPORT}"
+
+# Forward up? Probe through it. 000 = no listener → start one and re-probe.
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${SPORT}/doc" || true)
+if [ "$code" = "000" ]; then
+    echo "oattach: starting forward 127.0.0.1:${SPORT} → sandbox ${SBX}"
+    setsid openshell forward service "$SBX" --target-port "$SPORT" --local "$SPORT" \
+        >> "${TMPDIR:-/tmp}/oattach-forward.log" 2>&1 &
+    sleep 3
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${SPORT}/doc" || true)
+fi
+if [ "$code" = "000" ]; then
+    echo "oattach: forward up but the server is unreachable through it."
+    echo "  - 'invalid token: ExpiredSignature' in ${TMPDIR:-/tmp}/oattach-forward.log → openshell gateway login openshift"
+    echo "  - otherwise the daemon self-heals serve on the next sync pass (journalctl --user -u sync-agent.service)"
+    exit 4
+fi
+
+# Password straight from the pod's serve log into the environment (argv-safe).
+OPENCODE_SERVER_PASSWORD=$(openshell sandbox exec "$SBX" -- sh -c 'cat /sandbox/.opencode/serve.log /sandbox/.sync-agent/serve.log /sandbox/*/.sync-agent/serve.log 2>/dev/null' | sed -n 's/^server password //p' | tail -1)
+[ -n "${OPENCODE_SERVER_PASSWORD:-}" ] || {
+    echo "oattach: no 'server password' line in the pod serve logs — was serve started at all?"
+    exit 5
+}
+
+echo "oattach: target ${TNAME} — attaching via 127.0.0.1:${SPORT}"
+exec opencode --server "http://127.0.0.1:${SPORT}"

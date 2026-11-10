@@ -78,6 +78,15 @@ supervisor:
     pullPolicy: null
     # -- Supervisor image tag. Defaults to the chart appVersion when empty.
     tag: ""
+  network:
+    # -- M8 (2026-11-10): destination CA trust for supervisor upstreams —
+    # mounted at /etc/openshell-tls/additional-ca-source/ca.crt and rendered
+    # as [openshell.supervisor.network] additional_ca_bundle. The default
+    # (kube-root-ca.crt, auto-created in every namespace) carries the
+    # cluster API's CA — required by the kubernetes-api provider (the
+    # Stage-1 credential chain; applied directly 2026-11-09, chart-promoted
+    # 2026-11-10). Empty disables the mount + block.
+    additionalCaConfigMapName: kube-root-ca.crt
     # -- Supervisor image digest. When set, this takes precedence over tag.
     digest: ""
   sandboxRuntime:

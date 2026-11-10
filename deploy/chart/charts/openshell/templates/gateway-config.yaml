@@ -241,6 +241,13 @@ data:
     key_encryption_key_env = {{ include "openshell.credentialStorageKeyEncryptionKeyEnvName" . | quote }}
     {{- end }}
 
+    {{- if .Values.supervisor.network.additionalCaConfigMapName }}
+    # Destination CA trust for supervisor upstreams (the cluster-internal API
+    # cert at kubernetes.default.svc for the kubernetes-api provider).
+    [openshell.supervisor.network]
+    additional_ca_bundle = "/etc/openshell-tls/additional-ca-source/ca.crt"
+    {{- end }}
+
     {{- if .Values.server.credentialDrivers.kubernetesSecrets.enabled }}
 
     [openshell.credential_drivers.kubernetes-secrets]

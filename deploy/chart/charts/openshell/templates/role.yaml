@@ -65,4 +65,10 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
     verbs: ["create", "get"]
+  - apiGroups: [""]
+    # M8 (2026-11-10, promoted from a 2026-11-09 direct patch): the
+    # supervisor/gateway maintains per-sandbox config ConfigMaps (the
+    # config-service CA bundle et al).
+    resources: ["configmaps"]
+    verbs: ["get", "create"]
 {{- end }}

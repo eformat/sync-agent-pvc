@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 license = "MIT"
 # libp2p 0.57 (relay/p2p transports) requires rustc >= 1.88.

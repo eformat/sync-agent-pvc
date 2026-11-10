@@ -181,6 +181,18 @@ pub struct TargetConfig {
     /// never parsed from the file).
     #[serde(skip)]
     pub tunnel_args: Vec<String>,
+    /// M8: keep `opencode serve` running inside the sandbox for this
+    /// target's root (the attach workflow's server side — laptop
+    /// `opencode --server` over a port forward). Default ON for p2p
+    /// targets; `serve = false` opts out. The daemon self-heals it via
+    /// the sandbox probe (same drift path as the agent).
+    #[serde(default)]
+    pub serve: Option<bool>,
+    /// Explicit serve port. Default: derived deterministically from the
+    /// qualified sandbox id (stable across daemon restarts, distinct per
+    /// target — see [`serve_port`]).
+    #[serde(default)]
+    pub serve_port: Option<u16>,
 }
 
 fn default_root_remote() -> String {
@@ -331,6 +343,15 @@ pub struct SandboxStatus {
     pub mcp_config: bool,
     /// The target's remote root exists.
     pub root_ok: bool,
+    /// M8: an `opencode serve` process for THIS root (cwd match) is alive
+    /// with the target's serve port. Absent/false = the attach workflow
+    /// would have nothing to talk to; the pass self-heals it.
+    #[serde(default)]
+    pub serve_ok: bool,
+    /// M8: the port this target's serve listens on (deterministic per
+    /// target — see [`serve_port`]). Set by the probe caller, not the pod.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serve_port: Option<u16>,
 }
 
 impl SandboxStatus {
@@ -340,6 +361,19 @@ impl SandboxStatus {
     pub fn drifted_from(&self, version: &str, wanted_tunnel: &[String]) -> bool {
         self.agent_version != version || self.tunnel != wanted_tunnel
     }
+}
+
+/// The deterministic per-target serve port (M8): stable across daemon
+/// restarts, distinct per target, inside a private-ish high range so it
+/// never collides with the sync agent's own listeners. Config
+/// `serve_port` overrides.
+pub(crate) fn serve_port(cfg: &TargetConfig, qualified: &str) -> u16 {
+    if let Some(p) = cfg.serve_port {
+        return p;
+    }
+    let h = blake3::hash(qualified.as_bytes());
+    let n = u32::from_le_bytes(h.as_bytes()[..4].try_into().expect("4 bytes"));
+    4100 + (n % 400) as u16
 }
 
 /// The UI/API must never leave localhost: the daemon serves sync controls with
@@ -471,6 +505,10 @@ pub struct TargetShared {
     /// report replaces `honored`, and a one-pass note was too easy to miss.
     /// Cleared only by a daemon restart.
     pub provision_note: Mutex<Option<String>>,
+    /// M8: latched when the sandbox turns out to have no `opencode` binary —
+    /// serve respawn attempts stop for this daemon run (no respawn storm
+    /// against a missing binary). Cleared only by a daemon restart.
+    pub serve_missing: AtomicBool,
 }
 
 impl TargetShared {
@@ -693,6 +731,7 @@ echo spawned
 fn sandbox_probe_script(cfg: &TargetConfig, qualified: &str) -> String {
     let root = cfg.root_remote.trim_end_matches('/');
     let qualified_pat = self_guard_safe(qualified);
+    let serve_port_hex = format!("{:04X}", serve_port(cfg, qualified));
     format!(
         r#"FOUND=0
 for p in /proc/[0-9]*; do
@@ -711,6 +750,13 @@ done
 [ -x /sandbox/.sync-agent/agents/current/sync-agent ] && echo "mcp_binary=1" || echo "mcp_binary=0"
 grep -q 'agents/current/sync-agent' /sandbox/.config/opencode/opencode.json 2>/dev/null && echo "mcp_config=1" || echo "mcp_config=0"
 [ -d '{root}' ] && echo "root=1" || echo "root=0"
+# M8: is our serve port LISTENING inside the pod? NOTE: /proc/PID/cwd is
+# unreadable here (the bun runtime sets dumpable=0 — permission denied even
+# same-uid), so cwd-based detection is impossible; the port allocation is
+# daemon-owned (deterministic per target), which makes the socket the truth.
+SERVE=0
+[ -r /proc/net/tcp ] && awk '$2 ~ /:{serve_port_hex}$/ && $4 == "0A"' /proc/net/tcp >/dev/null 2>&1 && SERVE=1
+echo "serve_ok=$SERVE"
 "#,
     )
 }
@@ -737,6 +783,7 @@ fn parse_sandbox_status(out: &str) -> SandboxStatus {
             "mcp_binary" => status.mcp_binary = v.trim() == "1",
             "mcp_config" => status.mcp_config = v.trim() == "1",
             "root" => status.root_ok = v.trim() == "1",
+            "serve_ok" => status.serve_ok = v.trim() == "1",
             _ => {}
         }
     }
@@ -784,6 +831,39 @@ fn run_remote(cfg: &TargetConfig, oc: &str, script: &str) -> io::Result<String> 
         )));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// The M8 serve (re)spawn script (pure — testable): ensures the target's
+/// serve port is LISTENING inside the sandbox — the attach workflow's server
+/// side. Idempotent:
+/// - port already listening         → "serve-already"
+/// - opencode missing               → "serve-missing-opencode" (exit 0; the
+///   caller latches this and stops retrying — never a respawn loop)
+/// - otherwise                       → spawn (nohup, like the agent) →
+///   "serve-spawned"
+///
+/// NOTE: there is deliberately NO /proc/PID/cwd check — the bun runtime sets
+/// dumpable=0 (cwd unreadable even same-uid); the port allocation is
+/// daemon-owned (deterministic per target), so the socket IS the truth.
+fn serve_spawn_script(cfg: &TargetConfig, port: u16) -> String {
+    let root = cfg.root_remote.trim_end_matches('/');
+    let base = Path::new(root)
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "/sandbox".to_string());
+    let port_hex = format!("{:04X}", port);
+    format!(
+        r#"set -e
+command -v opencode >/dev/null 2>&1 || {{ echo "serve-missing-opencode"; exit 0; }}
+if awk '$2 ~ /:{port_hex}$/ && $4 == "0A"' /proc/net/tcp >/dev/null 2>&1; then
+  echo "serve-already"; exit 0
+fi
+cd '{root}'
+nohup opencode serve --port {port} >> {base}/.sync-agent/serve.log 2>&1 < /dev/null &
+sleep 2
+echo serve-spawned
+"#
+    )
 }
 
 /// Qualify the target's sandbox id in config.toml (persisted — survives
@@ -977,8 +1057,11 @@ fn run_pass(
         if cfg.relay.is_some() && cfg.kubeconfig.is_some() {
             let probe_qualified = qualified_sandbox(&cfg);
             match probe_sandbox(&cfg, &probe_qualified, oc) {
-                Ok(status) => {
+                Ok(mut status) => {
                     let drift = status.drifted_from(VERSION, &cfg.tunnel_args);
+                    // M8: the serve port is daemon-derived — stamp it so the
+                    // API/UI/wrapper all read one source of truth.
+                    status.serve_port = Some(serve_port(&cfg, &probe_qualified));
                     shared.update(|s| s.sandbox_status = Some(status.clone()));
                     if drift {
                         if cfg.auto_provision {
@@ -994,6 +1077,31 @@ fn run_pass(
                                 "daemon: sandbox agent drift on {probe_qualified} (running {} wanted {VERSION}) but auto_provision is off — leaving as-is",
                                 status.agent_version
                             );
+                        }
+                    }
+                    // M8: opencode serve self-heal (the attach workflow's
+                    // server side). Same never-fail-the-pass rule; respawn
+                    // is serve-scoped (never touches the agent). A sandbox
+                    // without opencode latches off for this daemon run —
+                    // no respawn storm against a missing binary.
+                    if cfg.serve.unwrap_or(true) && !status.serve_ok {
+                        let port = serve_port(&cfg, &probe_qualified);
+                        match run_remote(&cfg, oc, &serve_spawn_script(&cfg, port)) {
+                            Ok(out) => {
+                                let out = out.trim();
+                                if out == "serve-missing-opencode" {
+                                    if !shared.serve_missing.swap(true, Ordering::Relaxed) {
+                                        eprintln!(
+                                            "daemon: opencode not found in sandbox {probe_qualified} — serve disabled until daemon restart"
+                                        );
+                                    }
+                                } else if out != "serve-already" {
+                                    eprintln!("daemon: serve on {probe_qualified}: {out} (port {port})");
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("daemon: serve spawn failed (pass continues): {e}")
+                            }
                         }
                     }
                 }
@@ -1341,6 +1449,7 @@ pub fn spawn_target(
         first_sync_confirmed: AtomicBool::new(false),
         config_path,
         provision_note: Mutex::new(None),
+            serve_missing: AtomicBool::new(false),
     });
     {
         let snap = shared.state.lock().unwrap().clone();
@@ -1564,6 +1673,8 @@ mod tests {
             hole_punch: false,
             tunnel_services: Vec::new(),
             tunnel_args: Vec::new(),
+            serve: None,
+            serve_port: None,
         };
         let shared = Arc::new(TargetShared {
             cfg: std::sync::RwLock::new(mk_target()),
@@ -1581,6 +1692,7 @@ mod tests {
             first_sync_confirmed: AtomicBool::new(false),
             config_path: PathBuf::from("/tmp/t-config.toml"),
             provision_note: Mutex::new(None),
+            serve_missing: AtomicBool::new(false),
         });
         shared.add_resolution(ConflictResolution {
             path: ".agents".into(),
@@ -1699,6 +1811,8 @@ sandbox = "s2"
                 hole_punch: false,
                 tunnel_services: Vec::new(),
                 tunnel_args: Vec::new(),
+                serve: None,
+                serve_port: None,
             }],
             tunnel: crate::tunnel::TunnelConfig::default(),
         };
@@ -1734,6 +1848,8 @@ sandbox = "s2"
                 hole_punch: false,
                 tunnel_services: Vec::new(),
                 tunnel_args: Vec::new(),
+                serve: None,
+                serve_port: None,
             }),
             state: Mutex::new(TargetSnapshot {
                 first_preview: None,
@@ -1775,6 +1891,7 @@ sandbox = "s2"
             first_sync_confirmed: AtomicBool::new(false),
             config_path: PathBuf::from("/tmp/nonexistent-config.toml"),
             provision_note: Mutex::new(None),
+            serve_missing: AtomicBool::new(false),
         };
         assert_eq!(shared.drain_resolutions().len(), 1);
         assert!(
@@ -1808,6 +1925,8 @@ sandbox = "s2"
             hole_punch: false,
             tunnel_services: Vec::new(),
             tunnel_args: Vec::new(),
+            serve: None,
+            serve_port: None,
         };
         let mut old = HashMap::new();
         old.insert("a".to_string(), mk("node_modules"));
@@ -1847,6 +1966,8 @@ sandbox = "s2"
             hole_punch: true,
             tunnel_services: Vec::new(),
             tunnel_args: Vec::new(),
+            serve: None,
+            serve_port: None,
         };
         let script = provision_script(&cfg, "sync-oc+vllm");
         assert!(script.contains("mkdir -p '/sandbox/vllm'"), "{script}");
@@ -2002,6 +2123,8 @@ tunnel_services = ["nosuch"]
             mcp_binary: true,
             mcp_config: true,
             root_ok: true,
+            serve_ok: true,
+            serve_port: Some(4100),
         };
         assert!(!healthy.drifted_from("0.1.3", &["memory@7402".to_string()]));
         // Version drift (the 0.1.2 → 0.1.3 rollout shape).
@@ -2043,6 +2166,8 @@ tunnel_services = ["nosuch"]
             hole_punch: true,
             tunnel_services: vec!["memory".into()],
             tunnel_args: vec!["memory@7402:memory_store,memory_delete".into()],
+            serve: None,
+            serve_port: None,
         };
         let script = provision_script(&cfg, "sync-oc+plan");
         // The BIN lookup covers BOTH the per-root base and the shared install.
@@ -2107,6 +2232,8 @@ tunnel_services = ["nosuch"]
             hole_punch: true,
             tunnel_services: Vec::new(),
             tunnel_args: Vec::new(),
+            serve: None,
+            serve_port: None,
         };
         let script = sandbox_probe_script(&cfg, "sync-oc+plan");
         assert!(script.contains("agent_version="), "{script}");
@@ -2117,6 +2244,91 @@ tunnel_services = ["nosuch"]
         // cmdline must not self-match).
         assert!(script.contains("[s]ync-oc+plan"), "{script}");
         assert!(!script.contains("--sandbox-id sync-oc+plan "), "{script}");
+        // M8: the serve health line is present, keyed on the daemon-derived
+        // port's HEX form (the /proc/net/tcp socket check — cwd-based
+        // detection is impossible: the bun runtime sets dumpable=0).
+        assert!(script.contains("serve_ok="), "{script}");
+        let port = serve_port(&cfg, "sync-oc+plan");
+        let hex = format!("{:04X}", port);
+        assert!(
+            script.contains(&format!(":{hex}$")),
+            "derived port {port} (hex {hex}) drives the socket check: {script}"
+        );
+    }
+
+    #[test]
+    fn serve_port_is_deterministic_and_config_overridable() {
+        let mut cfg = TargetConfig {
+            name: "plan".into(),
+            root: "/tmp/plan".into(),
+            sandbox: "sync-oc+plan".into(),
+            workspace: None,
+            relay: Some("/ip4/203.0.113.7/tcp/4001/p2p/RELAY".into()),
+            excludes: vec![],
+            interval_secs: None,
+            debounce_ms: None,
+            master_key_file: None,
+            master_key_env: false,
+            kubeconfig: None,
+            root_remote: "/sandbox/.opencode/plan".into(),
+            auto_provision: true,
+            first_run_dry_run: None,
+            hole_punch: true,
+            tunnel_services: Vec::new(),
+            tunnel_args: Vec::new(),
+            serve: None,
+            serve_port: None,
+        };
+        let a = serve_port(&cfg, "sync-oc+plan");
+        let b = serve_port(&cfg, "sync-oc+plan");
+        assert_eq!(a, b, "same qualified id → same port (stable across restarts)");
+        assert!(
+            (4100..4500).contains(&a),
+            "derived port stays inside the reserved range: {a}"
+        );
+        cfg.serve_port = Some(5099);
+        assert_eq!(serve_port(&cfg, "sync-oc+plan"), 5099, "explicit override wins");
+    }
+
+    #[test]
+    fn serve_spawn_script_is_idempotent_and_self_match_safe() {
+        let cfg = TargetConfig {
+            name: "plan".into(),
+            root: "/tmp/plan".into(),
+            sandbox: "sync-oc+plan".into(),
+            workspace: None,
+            relay: Some("/ip4/203.0.113.7/tcp/4001/p2p/RELAY".into()),
+            excludes: vec![],
+            interval_secs: None,
+            debounce_ms: None,
+            master_key_file: None,
+            master_key_env: false,
+            kubeconfig: None,
+            root_remote: "/sandbox/.opencode/plan".into(),
+            auto_provision: true,
+            first_run_dry_run: None,
+            hole_punch: true,
+            tunnel_services: Vec::new(),
+            tunnel_args: Vec::new(),
+            serve: None,
+            serve_port: None,
+        };
+        let port = serve_port(&cfg, "sync-oc+plan");
+        let script = serve_spawn_script(&cfg, port);
+        // Missing opencode degrades cleanly (exit 0) — never a respawn loop.
+        assert!(script.contains("serve-missing-opencode"), "{script}");
+        // Idempotent happy path: the /proc/net/tcp LISTEN check gates the
+        // spawn (the socket is the truth — /proc/PID/cwd is unreadable).
+        assert!(script.contains("serve-already"), "{script}");
+        let hex = format!("{:04X}", port);
+        assert!(
+            script.contains(&format!(":{hex}$")),
+            "socket check keyed on port {port} (hex {hex}): {script}"
+        );
+        assert!(
+            script.contains(&format!("nohup opencode serve --port {port}")),
+            "{script}"
+        );
     }
 
     #[test]
@@ -2139,6 +2351,8 @@ tunnel_services = ["nosuch"]
             hole_punch: true,
             tunnel_services: Vec::new(),
             tunnel_args: Vec::new(),
+            serve: None,
+            serve_port: None,
         };
         assert!(
             should_provision(&base, false),
@@ -2252,6 +2466,8 @@ root_remote = "/sandbox/t"
                 hole_punch: false,
                 tunnel_services: Vec::new(),
                 tunnel_args: Vec::new(),
+                serve: None,
+                serve_port: None,
             }),
             state: Mutex::new(initial_snapshot(&TargetConfig {
                 name: "t".into(),
@@ -2271,6 +2487,8 @@ root_remote = "/sandbox/t"
                 hole_punch: false,
                 tunnel_services: Vec::new(),
                 tunnel_args: Vec::new(),
+                serve: None,
+                serve_port: None,
             })),
             paused: AtomicBool::new(false),
             stop: AtomicBool::new(false),
@@ -2285,6 +2503,7 @@ root_remote = "/sandbox/t"
             first_sync_confirmed: AtomicBool::new(false),
             config_path: PathBuf::from("/tmp/nonexistent-config.toml"),
             provision_note: Mutex::new(None),
+            serve_missing: AtomicBool::new(false),
         };
         shared.set_phase("syncing");
         let ev = rx.try_recv().unwrap();

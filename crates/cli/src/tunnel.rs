@@ -1190,6 +1190,8 @@ spool_tools = ["memory_store", "memory_delete"]
             hole_punch: true,
             tunnel_services: Vec::new(),
             tunnel_args: Vec::new(),
+            serve: None,
+            serve_port: None,
         }
         };
         let mut cfg = crate::daemon::DaemonConfig {

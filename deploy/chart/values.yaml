@@ -14,13 +14,27 @@ openshell:
   # — without this, the release prefix renames SAs and the SCC RoleBinding misses its subject.
   fullnameOverride: openshell
 
-  # Gateway image: public patched build (provisioning repair window + deadline patch,
+  # NOTE (2026-11-10, M8): sandboxJwt.ttlSecs feeds [openshell.gateway.gateway_jwt]
+  # ttl_secs — the gateway VALIDATES this as the sandbox session-token lifetime:
+  # "must be non-expiring or between 60 and 3600 seconds" (an 86400 attempt
+  # crash-looped the gateway on launch, reverted same day). So the ~1h expiry
+  # that kills long-lived CLI streams (`openshell forward service` for the
+  # opencode-attach path) is NOT fixable here — the CLI would need mid-stream
+  # token refresh. The durable fix is M9: the p2p reverse-forward, which
+  # removes openshell/OIDC from the attach path entirely. Do not raise this.
+
+  # Gateway image: patched build (provisioning repair window + deadline patch,
   # built from the v0.1.2 base) — zero ghcr dependency, proven on non-kata spokes.
+  # 2026-11-10: the LIVE gateway runs the self-built 0.1.8-pre.33 — rolled by a
+  # previous assistant session via direct kubectl patch (NOT a helm value), which
+  # is exactly why the M8 helm upgrade hit SSA conflicts; values updated to match
+  # reality so helm upgrades don't roll it back. See plan
+  # openshell-dashboard-selfbuilt-0.1.8-pre.33.md.
   gateway:
     image:
       registry: quay.io
       repository: eformat/openshell-gateway
-      tag: 0.1.2-deadline.2
+      tag: 0.1.8-pre.33
       pullPolicy: Always
   # Supervisor + sandbox runtime MUST be the same chart-family version (0.1.2).
   # M0.0 findings: (1) the guide's v0.0.116-rhaiv.0 tag doesn't exist on ghcr; (2) the

@@ -235,6 +235,11 @@ async fn create_target(
         // (tunnel_services); resolved args are computed by parse_config.
         tunnel_services: Vec::new(),
         tunnel_args: Vec::new(),
+        // M8 serve: defaults ON for p2p targets (self-healed by the probe);
+        // explicit `serve = false` in config.toml opts out. API-created
+        // targets inherit through resolve() below.
+        serve: None,
+        serve_port: None,
     };
     // Pair-key collision guard (M6, the M3 mass-deletion incident class): two
     // targets sharing ONE (sandbox, root_remote) share one ancestor archive

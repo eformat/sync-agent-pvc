@@ -173,6 +173,12 @@ spec:
           mountPath: /etc/openshell-tls/oidc-ca
           readOnly: true
         {{- end }}
+        {{- if .Values.supervisor.network.additionalCaConfigMapName }}
+        - name: additional-ca
+          mountPath: /etc/openshell-tls/additional-ca-source/ca.crt
+          subPath: ca.crt
+          readOnly: true
+        {{- end }}
         {{- if and .Values.server.credentialDrivers.vault.enabled .Values.server.credentialDrivers.vault.caConfigMapName }}
         - name: vault-ca
           mountPath: /etc/openshell-tls/vault-ca
@@ -270,6 +276,15 @@ spec:
     - name: oidc-ca
       configMap:
         name: {{ .Values.server.oidc.caConfigMapName }}
+    {{- end }}
+    {{- if .Values.supervisor.network.additionalCaConfigMapName }}
+    - name: additional-ca
+      configMap:
+        name: {{ .Values.supervisor.network.additionalCaConfigMapName }}
+        defaultMode: 420
+        items:
+          - key: ca.crt
+            path: ca.crt
     {{- end }}
     {{- if and .Values.server.credentialDrivers.vault.enabled .Values.server.credentialDrivers.vault.caConfigMapName }}
     - name: vault-ca
