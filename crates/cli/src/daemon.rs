@@ -790,6 +790,60 @@ echo "serve_ok=$SERVE"
     )
 }
 
+/// Kill script for ONE qualified agent id — the DELETE API's sandbox-side
+/// cleanup. Self-guarded: the `[s]ync-agent` class matches the agent's
+/// cmdline but never this script's own text (same trick as the probe); the
+/// trailing `\ *` after the id prevents prefix collisions (plan vs plan2).
+/// Without this, a deleted target's agent runs forever: still dialing the
+/// relay on its own identity + reservation, still writing to its root
+/// (found live 2026-11-12 — a deleted demo-sync target's orphan showed up
+/// as a second "attachment" in the TUI's agent listing).
+pub(crate) fn agent_kill_script(qualified: &str) -> String {
+    let qualified_pat = self_guard_safe(qualified);
+    format!(
+        r#"killed=0
+for p in /proc/[0-9]*; do
+  case "$p" in "/proc/$$") continue ;; esac
+  c=$(tr '\0' ' ' < $p/cmdline 2>/dev/null) || continue
+  case "$c" in
+    *[s]ync-agent\ p2p*--sandbox-id\ {qualified_pat}\ *)
+      kill ${{p#/proc/}} 2>/dev/null && killed=$((killed + 1)) ;;
+  esac
+done
+echo "killed=$killed"
+"#
+    )
+}
+
+/// Sweep script for a sandbox: kill every `sync-agent p2p` whose
+/// `--sandbox-id` is NOT in the wanted set — the daemon-startup safety net
+/// for orphans that predate a config edit (hand-edited config while the
+/// daemon was down, a crashed DELETE, …). The wanted ids arrive
+/// self-guarded (`[s]ync-oc+plan`) so the script text never matches itself.
+pub(crate) fn agent_sweep_script(wanted_guards: &[String]) -> String {
+    let wanted = wanted_guards.join(" ");
+    format!(
+        r#"WANTED="{wanted}"
+swept=0
+for p in /proc/[0-9]*; do
+  case "$p" in "/proc/$$") continue ;; esac
+  c=$(tr '\0' ' ' < $p/cmdline 2>/dev/null) || continue
+  case "$c" in
+    *[s]ync-agent\ p2p*--sandbox-id\ *)
+      id=$(echo "$c" | sed -n 's|.*--sandbox-id \([^ ]*\).*|\1|p')
+      [ -n "$id" ] || continue
+      keep=0
+      for w in $WANTED; do case "$id" in $w) keep=1 ;; esac; done
+      if [ "$keep" = "0" ]; then
+        kill ${{p#/proc/}} 2>/dev/null && swept=$((swept + 1)) && echo "swept: $id"
+      fi ;;
+  esac
+done
+echo "swept=$swept"
+"#
+    )
+}
+
 /// Parse [`sandbox_probe_script`]'s output. Unknown/absent keys default
 /// honestly (a partial probe must never read as "everything healthy").
 fn parse_sandbox_status(out: &str) -> SandboxStatus {
@@ -1643,6 +1697,39 @@ pub fn run(config_path: &Path, bind_override: Option<&str>) -> io::Result<()> {
     let (events, _) = broadcast::channel(512);
 
     let mut map: HashMap<String, Arc<TargetShared>> = HashMap::new();
+    // 2026-11-12: sweep managed sandboxes for agents whose target no longer
+    // exists (a config edited while the daemon was down, a crashed DELETE, a
+    // hand-kill of the wrong thing). Orphans dial the relay on their own
+    // identity + reservation and keep writing to their root. auto_provision
+    // off = hands-off sandbox (no sweep).
+    {
+        use std::collections::BTreeMap;
+        let mut guards_by_sandbox: BTreeMap<String, (TargetConfig, Vec<String>)> = BTreeMap::new();
+        for tc in &cfg.targets {
+            if tc.relay.is_none() || tc.kubeconfig.is_none() {
+                continue;
+            }
+            if !tc.auto_provision {
+                continue;
+            }
+            let base = tc.sandbox.split('+').next().unwrap_or(&tc.sandbox).to_string();
+            let entry = guards_by_sandbox
+                .entry(base)
+                .or_insert_with(|| (tc.clone(), Vec::new()));
+            entry.1.push(self_guard_safe(&qualified_sandbox(tc)));
+        }
+        for (base, (tc_any, guards)) in guards_by_sandbox {
+            let script = agent_sweep_script(&guards);
+            match run_remote(&tc_any, &oc, &script) {
+                Ok(out) if out.trim() != "swept=0" => eprintln!(
+                    "daemon: startup sweep on {base} — removed agents with no config target: {}",
+                    out.trim()
+                ),
+                Ok(_) => {}
+                Err(e) => eprintln!("daemon: startup sweep on {base} failed (best-effort): {e}"),
+            }
+        }
+    }
     for tc in &cfg.targets {
         let sh = spawn_target(tc.clone(), &oc, events.clone(), config_path.to_path_buf());
         map.insert(tc.name.clone(), sh);
@@ -2461,6 +2548,43 @@ tunnel_services = ["nosuch"]
             script.contains(&format!(":{hex}$")),
             "derived port {port} (hex {hex}) drives the socket check: {script}"
         );
+    }
+
+    #[test]
+    fn agent_kill_script_is_guarded_and_prefix_safe() {
+        let script = agent_kill_script("sync-oc+demo-sync");
+        // The qualified id appears only in its guard-safe form — a /proc scan
+        // of the script's own cmdline must not self-match (hit live
+        // 2026-11-12: an inline kill loop matched its own sh -c text and
+        // killed itself alongside the orphan).
+        assert!(
+            script.contains(&self_guard_safe("sync-oc+demo-sync")),
+            "{script}"
+        );
+        assert!(!script.contains("sync-agent p2p"), "{script}");
+        assert!(script.contains("[s]ync-agent\\ p2p"), "{script}");
+        // Prefix collisions (plan vs plan2) need the trailing `\ *` after
+        // the id — the id alone would match any extension of itself.
+        assert!(
+            script.contains("--sandbox-id\\ [s]ync-oc+demo-sync\\ *)"),
+            "{script}"
+        );
+        assert!(script.contains("killed="), "{script}");
+    }
+
+    #[test]
+    fn agent_sweep_script_keeps_every_wanted_id() {
+        let script = agent_sweep_script(&[
+            self_guard_safe("sync-oc+plan"),
+            self_guard_safe("sync-oc+vllm"),
+        ]);
+        assert!(script.contains("[s]ync-oc+plan"), "{script}");
+        assert!(script.contains("[s]ync-oc+vllm"), "{script}");
+        // The kill is conditional on NO wanted id matching.
+        assert!(script.contains("keep=0"), "{script}");
+        assert!(script.contains("swept="), "{script}");
+        // And the script never matches its own cmdline.
+        assert!(!script.contains("sync-agent p2p"), "{script}");
     }
 
     #[test]

@@ -321,6 +321,16 @@ async fn delete_target(
     AxPath(name): AxPath<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     with_target(&st, &name)?; // 404 for unknown names
+    // Capture the target's config BEFORE the removal — the sandbox-side
+    // cleanup needs its qualified id + transport (2026-11-12: the detach
+    // used to leave the sandbox agent running forever — an orphan dialing
+    // the relay on its own identity, surfacing as a second "attachment").
+    let pre_cfg = st
+        .targets
+        .lock()
+        .unwrap()
+        .get(&name)
+        .map(|t| t.cfg.read().unwrap().clone());
     let existed = crate::daemon::remove_target_in_config(&st.config_path, &name).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -336,6 +346,24 @@ async fn delete_target(
             target: name.clone(),
             snapshot: None,
         });
+    }
+    // Sandbox-side cleanup (best-effort, never fails the DELETE): the loop
+    // above is daemon-side only — the agent process in the sandbox has no
+    // lifecycle of its own and would keep dialing the relay + writing to
+    // its root. p2p targets only (oc-exec targets have no sandbox agent).
+    if let Some(cfg) = pre_cfg {
+        if cfg.relay.is_some() && cfg.kubeconfig.is_some() {
+            let qualified = crate::daemon::qualified_sandbox(&cfg);
+            let script = crate::daemon::agent_kill_script(&qualified);
+            match crate::daemon::run_remote(&cfg, &st.oc, &script) {
+                Ok(out) => {
+                    eprintln!("daemon: detach {name}: sandbox agent cleanup ({qualified}): {}", out.trim())
+                }
+                Err(e) => eprintln!(
+                    "daemon: detach {name}: sandbox agent cleanup failed (best-effort): {e}"
+                ),
+            }
+        }
     }
     Ok(Json(json!({
         "ok": existed,

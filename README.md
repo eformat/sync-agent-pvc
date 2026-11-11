@@ -8,7 +8,7 @@ P2P link that survives NAT, cluster outages, and your laptop being shut — plus
 **default-deny tunnel** that gives sandbox agents the laptop's memory MCP as if it were local.
 
 [![status](https://img.shields.io/badge/status-M9%20attach%20verified-3fb950)](#status)
-[![tests](https://img.shields.io/badge/tests-294%20passing-3fb950)](#status)
+[![tests](https://img.shields.io/badge/tests-296%20passing-3fb950)](#status)
 [![rust](https://img.shields.io/badge/rust-2024%20edition-dea584?logo=rust)](https://rustlang.org)
 [![flow story](https://img.shields.io/badge/%F0%9F%8E%AC%20flow%20story-live%20on%20Pages-58a6ff)](https://eformat.github.io/sync-agent-pvc/)
 
@@ -219,7 +219,7 @@ the source of truth.
 | M8 | clipboard/attach: pod-side `opencode serve` + `oattach` + paste/copy both directions | ✅ e2e verified |
 | M9 | p2p reverse-forward: attach to the pod's opencode with no openshell/OIDC in the data path | ✅ e2e verified |
 
-**294 tests green · clippy clean.** The plan of record lives at
+**296 tests green · clippy clean.** The plan of record lives at
 `~/.opencode/plan/sync-agent-pvc.md` (local; not in git).
 
 ## Docs
