@@ -8,7 +8,7 @@
   },
   "canvas": {
     "width": 1250,
-    "height": 940
+    "height": 1050
   },
   "nodes": {
     "laptop": { "x": 30, "y": 60, "w": 480, "h": 770, "type": "boundary", "label": "Laptop — $HOME ⇄ daemon" },
@@ -45,7 +45,13 @@
     "opencode": { "x": 1010, "y": 445, "w": 165, "h": 60, "label": "OpenCode agent", "sublabel": "reads its $HOME here", "color": "#79c0ff", "fontSize": 14 },
 
     "pvc": { "x": 795, "y": 610, "w": 195, "h": 60, "label": "PersistentVolumeClaim", "sublabel": "outlives the pod", "color": "#3fb950", "fontSize": 13 },
-    "chart": { "x": 1010, "y": 610, "w": 190, "h": 60, "label": "deploy/chart (GitOps)", "sublabel": "Route · Secret · SCC · egress", "color": "#8b949e", "fontSize": 13 }
+    "chart": { "x": 1010, "y": 610, "w": 190, "h": 60, "label": "deploy/chart (GitOps)", "sublabel": "Route · Secret · SCC · egress", "color": "#8b949e", "fontSize": 13 },
+
+    "attachzone": { "x": 340, "y": 860, "w": 880, "h": 165, "type": "boundary", "label": "The attach path — M8+M9 · one outbound dial, no VPN, no openshell in the data path" },
+    "oattach": { "x": 360, "y": 915, "w": 185, "h": 60, "label": "oattach", "sublabel": "verify pw · both env names", "color": "#f0883e" },
+    "tui": { "x": 570, "y": 915, "w": 185, "h": 60, "label": "opencode TUI", "sublabel": "laptop — landed in /sandbox", "color": "#58a6ff" },
+    "fwdlisten": { "x": 780, "y": 915, "w": 185, "h": 60, "label": "loopback listener", "sublabel": "127.0.0.1:4388 — iff link up", "color": "#58a6ff" },
+    "serve": { "x": 1005, "y": 915, "w": 190, "h": 60, "label": "opencode serve", "sublabel": ":4388 — pod · mediated spawn", "color": "#58a6ff" }
   },
   "tooltips": {
     "home": {
@@ -309,6 +315,52 @@
       "links": [
         ["deploy/chart", "https://github.com/eformat/sync-agent-pvc/tree/main/deploy/chart"]
       ]
+    },
+
+    "attachzone": {
+      "title": "The attach path — M8+M9",
+      "description": "One outbound dial, no VPN, no openshell in the data path: the laptop TUI reaches the pod serve over the p2p reverse-forward, and the clipboard works both ways.",
+      "details": [
+        ["M8", "daemon-managed opencode serve (derived port, self-healed) + oattach — paste and copy verified both directions"],
+        ["M9", "p2p reverse-forward, protocol /sync-agent-pvc/forward/1 — the daemon dials OUT; the listener binds iff the agent link is up"],
+        ["Identity", "the forward derives its own tunnel peer — one peer = one connection = one relay reservation"]
+      ]
+    },
+    "oattach": {
+      "title": "oattach — attach to the sandbox serve",
+      "description": "The laptop-side attach command. Discovers the serve password from the pod serve logs and verifies it against the live serve before launching the local TUI; both OPENCODE_PASSWORD and OPENCODE_SERVER_PASSWORD are exported.",
+      "details": [
+        ["Verify", "password from the serve logs, checked against the live serve before launch"],
+        ["Env", "OPENCODE_PASSWORD + OPENCODE_SERVER_PASSWORD exported"],
+        ["Restart", "oattach restart → POST /api/targets/{name}/serve-restart (mediated respawn, same port)"]
+      ]
+    },
+    "tui": {
+      "title": "opencode TUI (laptop)",
+      "description": "The OpenCode TUI runs LOCALLY on the laptop, pointed at the sandbox serve through the loopback listener. The native UI owns the laptop clipboard, so paste and copy just work — only the prompt content rides the link.",
+      "details": [
+        ["Endpoint", "127.0.0.1:4388 via the loopback listener"],
+        ["Paste", "Ctrl+V: the screenshot rides the link INTO the session (image paste → GLM vision)"],
+        ["Copy", "the selection lands back on the laptop clipboard"]
+      ]
+    },
+    "fwdlisten": {
+      "title": "loopback listener :4388",
+      "description": "The daemon's loopback-only listener on the derived serve port. It binds IFF the agent link is up — no link, no listener, no attach. The daemon dials OUT to the agent: one outbound dial through the relay, no inbound ports anywhere.",
+      "details": [
+        ["Bind rule", "binds iff the agent link is up (same derived port as the pod serve)"],
+        ["Protocol", "/sync-agent-pvc/forward/1 — the p2p reverse-forward"],
+        ["Dial-out", "one outbound dial through the relay; the agent accepts the circuit"]
+      ]
+    },
+    "serve": {
+      "title": "opencode serve :4388 (pod)",
+      "description": "The daemon-managed opencode serve inside the sandbox — a derived per-sandbox port (4388 for the plan target), self-healed if it goes down. Spawned through the mediated openshell sandbox exec path, like the sync agent.",
+      "details": [
+        ["Port", "derived per sandbox — 4388 for plan; self-healed"],
+        ["Spawn", "mediated openshell sandbox exec path (serve_remote; oc-exec fallback)"],
+        ["Cwd", "the serve lands in /sandbox"]
+      ]
     }
   },
   "flows": {
@@ -389,6 +441,21 @@
         { "text": "9. re-pointed root ⇒ fresh no-base archive: deletes suppressed until trust is rebuilt", "mode": "lightup", "target": "archive", "badge": 9 },
         { "text": "10. every halt lands in the run report + UI", "mode": "arrow", "from": "apihttp", "to": "ui", "color": "#f85149", "num": 10, "fromRight": true, "toLeft": true },
         { "text": "11. loud diagnostics: pin mismatch, root facts, remote UID, halt reason", "mode": "lightup", "target": "ui", "badge": 11 }
+      ]
+    },
+    "attach": {
+      "label": "Attach to the sandbox OpenCode (M8+M9)",
+      "steps": [
+        { "text": "1. oattach: password from the pod serve logs, verified against the live serve", "mode": "lightup", "target": "oattach", "badge": 1 },
+        { "text": "2. oattach launches the local TUI against 127.0.0.1:4388", "mode": "arrow", "from": "oattach", "to": "tui", "color": "#f0883e", "num": 2, "fromRight": true, "toLeft": true },
+        { "text": "3. TUI talks to the loopback listener (binds iff the agent link is up)", "mode": "arrow", "from": "tui", "to": "fwdlisten", "color": "#58a6ff", "num": 3, "fromRight": true, "toLeft": true },
+        { "text": "4. the daemon dials OUT: one outbound dial through the relay", "mode": "arrow", "from": "fwdlisten", "to": "relay", "color": "#58a6ff", "num": 4, "fromTop": true, "toBottom": true },
+        { "text": "5. the agent accepts the circuit (dedicated tunnel peer)", "mode": "arrow", "from": "relay", "to": "agent", "color": "#58a6ff", "num": 5, "fromRight": true, "toLeft": true },
+        { "text": "6. forwarded into the pod's opencode serve (:4388)", "mode": "arrow", "from": "agent", "to": "serve", "color": "#58a6ff", "num": 6, "fromRight": true, "toTop": true, "waypoints": [{ "x": 1000, "y": 350 }, { "x": 1000, "y": 880 }] },
+        { "text": "7. the session renders in the laptop TUI — GLM inference works", "mode": "lightup", "target": "serve", "badge": 7 },
+        { "text": "8. Ctrl+V: the screenshot rides the link INTO the session", "mode": "arrow", "from": "tui", "to": "serve", "color": "#58a6ff", "num": 8, "fromBottom": true, "toBottom": true, "waypoints": [{ "x": 850, "y": 1000 }] },
+        { "text": "9. copy: the selection lands back on the laptop clipboard", "mode": "arrow", "from": "serve", "to": "tui", "color": "#3fb950", "num": 9, "fromBottom": true, "toBottom": true, "waypoints": [{ "x": 850, "y": 1018 }] },
+        { "text": "10. oattach restart: mediated serve respawn, same port", "mode": "lightup", "target": "oattach", "badge": 10 }
       ]
     }
   },
@@ -559,6 +626,41 @@
             { "id": "s-halt", "style": "highlight" },
             { "id": "s-guard", "style": "highlight" }
         ] }
+      ],
+      "attach": [
+        { "step": 1, "label": "① oattach: discover + verify", "actions": [], "replaceHeaders": [
+            { "value": "GET /openapi.json — Authorization: Basic opencode:••••", "style": "keep", "id": "a-v1" },
+            { "value": "200 OK — password verified against the live serve", "style": "add", "id": "a-v2" }
+          ], "replaceBody": [
+            { "value": "// pod serve logs → password candidates", "style": "keep", "id": "a-b1" },
+            { "value": "export OPENCODE_PASSWORD=••••   (both env names exported)", "style": "keep", "id": "a-b2" },
+            { "value": "export OPENCODE_SERVER_PASSWORD=••••", "style": "keep", "id": "a-b3" }
+          ] },
+        { "step": 2, "label": "② TUI launches", "actions": [
+            { "action": "add", "target": "body", "value": "oattach → opencode TUI — landed in /sandbox", "id": "a-tui" }
+        ] },
+        { "step": 3, "label": "③ loopback listener binds", "actions": [
+            { "action": "add", "target": "body", "value": "127.0.0.1:4388 LISTEN — iff the agent link is up", "id": "a-lis" }
+        ] },
+        { "step": 4, "label": "④ daemon dials OUT", "actions": [
+            { "action": "add", "target": "body", "value": "one outbound dial → relay — zero inbound listeners", "id": "a-dial" }
+        ] },
+        { "step": 5, "label": "⑤ agent accepts the circuit", "actions": [
+            { "action": "add", "target": "body", "value": "dedicated tunnel peer — one role, one reservation", "id": "a-cir" }
+        ] },
+        { "step": 6, "label": "⑥ into the serve", "actions": [
+            { "action": "add", "target": "body", "value": "forwarded → opencode serve :4388 (pod, mediated spawn)", "id": "a-fwd" }
+        ] },
+        { "step": 7, "label": "⑦ session renders", "phase": "response", "actions": [
+            { "action": "add", "target": "body", "value": "GLM answers — inference works over the link", "style": "add", "id": "a-glm" }
+        ] },
+        { "step": 8, "label": "⑧ paste", "actions": [
+            { "action": "add", "target": "body", "value": "Ctrl+V — screenshot bytes ride the link INTO the session", "id": "a-paste" }
+        ] },
+        { "step": 9, "label": "⑨ copy back", "actions": [
+            { "action": "add", "target": "body", "value": "selection lands on the laptop clipboard (laptop-native)", "style": "add", "id": "a-copy" }
+        ] },
+        { "step": 10, "label": "⑩ oattach restart", "actions": [] }
       ]
     }
   },
@@ -570,6 +672,6 @@
     { "label": "Infrastructure / transports", "color": "#8b949e" },
     { "label": "Halts / errors", "color": "#f85149" }
   ],
-  "flowOrder": ["bisync", "mcp", "provision", "safety"],
+  "flowOrder": ["bisync", "mcp", "provision", "safety", "attach"],
   "defaultFlow": "bisync"
 }

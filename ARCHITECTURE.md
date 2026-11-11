@@ -125,6 +125,11 @@ egress policy needs exactly one allowance (the VPS). Agent identities are
 derived, not enrolled: `PeerId = derive(master_key, sandbox_id)`, pinned TOFU
 and matched strictly thereafter.
 
+The attach path is the newest rung: the reverse-forward (M9) carries the laptop
+TUI's bytes to the pod's `opencode serve` over the same relay — **no
+openshell/OIDC anywhere in the data path**. The `openshell forward service`
+route is fallback only (and dies with the ~1 h gateway JWT).
+
 ## The memory tunnel (M5)
 
 Sandbox OpenCode gets the laptop's memory MCP — the same tools, the laptop
@@ -161,6 +166,85 @@ sequenceDiagram
   idempotent because the store is content-addressed.
 - **Deterministic tunnel identity.** The daemon's tunnel PeerId is derived
   from the shared master key, so agents compute it with no rendezvous.
+
+## The attach path (M8)
+
+The laptop drives the pod's own OpenCode. The daemon spawns an `opencode serve`
+inside the sandbox; `oattach` points a laptop OpenCode TUI at it through the P2P
+forward (below). The TUI runs locally, so clipboard paste and copy work natively —
+Ctrl+V pastes a laptop screenshot into the remote session, copy lands back on the
+laptop clipboard; only the prompt content rides the link.
+
+- **Daemon-owned serve.** `opencode serve` runs beside the agent on a
+  deterministic per-sandbox port — blake3 of the qualified sandbox id →
+  `4100 + hash % 400` (4388 for `plan`) — derived identically by daemon and agent
+  with no config channel. The sync pass self-heals serve drift with a serve-scoped
+  respawn (never touches the agent). The serve runs with cwd `/sandbox`, so an
+  attached TUI lands there.
+- **Mediated spawn.** The serve (like the agent) is spawned through the mediated
+  exec path (`openshell sandbox exec`): the 0.1.8-pre.33 sandbox runtime
+  egress-denies every `oc exec`-spawned process — DNS *and* TCP — so an
+  oc-exec-spawned serve could never reach its inference endpoint. oc-exec stays
+  as the fallback.
+- **`oattach`.** Target + port come from the daemon API; the password is
+  discovered from the pod's serve logs and every candidate is verified against
+  the live serve (`GET /openapi.json`, HTTP BASIC) before launch. Both
+  `OPENCODE_PASSWORD` and `OPENCODE_SERVER_PASSWORD` are exported — the client
+  prefers the first, and an unexported assignment never reaches it. Secrets live
+  in env only, never argv.
+- **`oattach restart`.** A wedged serve is a one-liner: the wrapper POSTs
+  `/api/targets/{name}/serve-restart`, the daemon kills the serve by port and
+  re-runs the spawn body, and `oattach` polls the port and re-attaches — a
+  restarted serve appends a fresh password, which the verify loop picks up.
+
+## The reverse-forward (M9)
+
+The attach path rides the P2P link itself — no `openshell forward`, no gateway
+JWT, no OIDC anywhere in the data path:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant T as laptop TUI (oattach)
+    participant L as loopback listener<br/>127.0.0.1:<serve_port>
+    participant D as daemon (forward client)
+    participant A as sandbox agent
+    participant S as opencode serve (pod)
+
+    Note over L: bound iff the agent link is up
+    T->>L: raw bytes
+    D->>A: open stream /sync-agent-pvc/forward/1<br/>SAPVFWD1 handshake<br/>(dialed OUT over the agent's circuit)
+    A->>A: peer must equal the daemon identity<br/>else UNAUTHORIZED_PEER + close
+    A->>S: dial 127.0.0.1:<serve_port> BEFORE replying
+    A-->>D: OK (or UPSTREAM_UNAVAILABLE)
+    D-->>T: raw pipe (copy_bidirectional)
+```
+
+- **Dial-out only.** The daemon dials the agent's existing relay circuit; nothing
+  new listens inbound. The laptop loopback listener binds **iff** the agent link
+  is up (bound on ConnectionEstablished, dropped on ConnectionClosed) — a dead
+  p2p path fails fast (ECONNREFUSED) and leaves the port free for the
+  openshell-forward fallback.
+- **Protocol.** `/sync-agent-pvc/forward/1`, MAGIC `SAPVFWD1`, one status byte
+  (OK / UNAUTHORIZED_PEER / UPSTREAM_UNAVAILABLE / BAD_HANDSHAKE), then a raw
+  pipe. The handshake is deliberately port-less: both ends derive the serve port
+  from the sandbox id (above).
+- **One peer, one reservation.** The daemon once held three relay connections
+  under one derived identity (sync dials + tunnel listener + forward client) and
+  the relay intermittently mis-resolved the reservation. The tunnel listener now
+  derives its own peer — `derive_tunnel_identity_seed` =
+  blake3(master, "sync-agent-pvc/v1/tunnel") — so one peer = one connection = one
+  reservation; sync and forward keep the original identity, and the forward's
+  peer check is unchanged.
+- **Zombie self-heal.** A daemon restart can kill the agent's tunnel circuit
+  without the relay ever delivering ConnectionClosed — the link flag stays true
+  and every request quietly takes the offline path. A stream-open failure while
+  the driver believes the link is up IS the zombie signature: the flag clears and
+  the tick re-dials. The tick also ground-truths the flag from the swarm
+  (`is_connected`), so a link that is actually up is restored, never wedged.
+- **Serve restart.** `oattach restart` drives `POST /api/targets/{name}/serve-restart`
+  (kill by port → mediated respawn → fresh password), so a wedged serve never
+  needs a pod login.
 
 ## Control plane (MCP)
 
@@ -204,9 +288,9 @@ flowchart TD
 | Crate | Role |
 |---|---|
 | `crates/core` | sync engine: scan (blake3), 3-way reconcile, archive, excludes (vendored copia cores) |
-| `crates/proto` | MAGIC handshake + bounded-length CBOR/bincode frames, tunnel handshake, control types |
+| `crates/proto` | MAGIC handshake + bounded-length CBOR/bincode frames, tunnel handshake, control types, `derive_tunnel_identity_seed`, the forward protocol + derived serve port |
 | `crates/agent` | remote agent: `serve` (exec/stdio), `p2p` (driver + transports), tunnel client + spool, MCP server, self-installing binaries |
-| `crates/cli` | laptop daemon: per-target pass loops, localhost API + vendored PatternFly UI, P2P/exec transports, tunnel service + allowlist |
+| `crates/cli` | laptop daemon: per-target pass loops, localhost API + vendored PatternFly UI, P2P/exec transports, tunnel service + allowlist, attach path (`agent_spawn_script` / `serve_remote` / `run_remote_mediatted` mediated spawns, the serve-restart route) |
 
 ## Failure semantics (the chaos gate)
 
@@ -219,3 +303,5 @@ flowchart TD
 | Mass deletion (bad pair key, stale tree) | large-deletion guard halts the pass and demands a human |
 | Tunnel down | writes spool (FIFO, idempotent), reads miss cleanly, flush converges on reconnect |
 | Unknown tunnel service / stranger peer | one status byte + clean close; counted in `/api/tunnel` refusals |
+| Every "port listening" gate (awk) | awk exits 0 even with zero matches — every serve gate was vacuously true and the M8 self-heal was dead code; fixed with `awk '… { s=1 } END { exit s ? 0 : 1 }'` (test the negative case) |
+| 0.1.8-pre.33 platform regressions | the network_broker egress-denies oc-exec-spawned processes (DNS + TCP) → agent + serve spawn via mediated `openshell sandbox exec`; the supervisor matches the policy binaries list against the RESOLVED agent path → policy v5 + a per-deploy registration follow-up |

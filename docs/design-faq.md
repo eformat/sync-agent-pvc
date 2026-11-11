@@ -166,3 +166,27 @@ archive exists at all.
   large-deletion guard, never applied.
 - 10-hour clock skew between laptop and sandbox: zero effect on correctness
   (digests decide).
+
+---
+
+## "Why did DNS break inside the sandbox?"
+
+It didn't break — the admission regime moved. On the **0.1.8-pre.33 sandbox
+runtime**, the `network_broker` egress-denies every process created via
+`oc exec` — **DNS and TCP alike**. Sockets only enter the broker's admission
+table when they are created under the runtime's syscall mediation, and
+`oc exec` bypasses that mediation entirely. (The 0.1.2-era runtime had no such
+admission — which is why M5/M8/M9 ran happily on oc-exec-spawned processes
+right up until the upgrade.)
+
+- **Symptom** (2026-11-11): `getaddrinfo EAI_AGAIN` for ALL names — inference
+  and the relay alike — with the authoritative receipt in the supervisor log:
+  `DENIED … → 52.64.89.26:4001 [reason:transparent_tcp_policy_denied]`.
+- **Fix**: long-lived processes (the sync agent, the opencode serve) spawn
+  through the **mediated** `openshell sandbox exec` path — the daemon has
+  done this since 0.1.8 (`agent_spawn_script` + `serve_remote`, oc-exec
+  fallback). Mediated sockets sit in the admission table for life.
+- **Diagnostic gotcha**: `oc exec … getent` is *structurally* unreliable on
+  this stack — an unmediated process answers EAI_AGAIN no matter how healthy
+  the network is, so the probe proves nothing. The authoritative DNS test is
+  `openshell sandbox exec sync-oc -- getent hosts …`.

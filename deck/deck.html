@@ -6,13 +6,13 @@
 <link rel="icon" href="data:,">
 <title>Your Laptop Is the Durable Tier — sync-agent-pvc</title>
 <!-- Commands the syntax highlighter recognizes in .code / .kit dd (pipe-separated) -->
-<meta name="deck-commands" content="sync-agent|cargo|oc|kubectl|git|rsync|ssh|qrencode">
+<meta name="deck-commands" content="sync-agent|cargo|oc|kubectl|git|rsync|ssh|qrencode|oattach">
 <link rel="stylesheet" href="deck.css">
 <link rel="stylesheet" href="components.css">
 </head>
 <body>
-<!-- data-hard-stop: the presenter gauge's full scale, in seconds (20 min for a ~14 min plan). -->
-<main id="deck" data-hard-stop="1200">
+<!-- data-hard-stop: the presenter gauge's full scale, in seconds (22.5 min for a ~17 min plan). -->
+<main id="deck" data-hard-stop="1350">
 
 <!-- ═══ 1 · TITLE ═══ -->
 <section class="slide title" data-seconds="40" data-coach="Look up before the hook. Promise the one thing they leave with: a protocol for two real disks.">
@@ -351,7 +351,66 @@
   </aside>
 </section>
 
-<!-- ═══ 15 · SELF-MANAGING AGENTS ═══ -->
+<!-- ═══ 15 · THE ATTACH PATH (M8) ═══ -->
+<section class="slide" data-seconds="50" data-coach="One hop per click. Land the demo beat: paste the screenshot — GLM sees it.">
+  <p class="kicker">The attach path · M8</p>
+  <h2>Your clipboard crosses the boundary.</h2>
+  <div class="stage" aria-hidden="true">
+    <ol class="hops">
+      <li class="hop" data-step="1"><span class="n">1</span><p>The pod runs a daemon-managed <span class="mono">opencode serve</span> on a derived per-sandbox port — blake3 of the qualified sandbox id → <span class="mono">4100+hash%400</span> (<span class="mono">4388</span> for <span class="mono">plan</span>). If it dies, the sync pass <b>respawns it</b>.</p></li>
+      <li class="hop" data-step="2"><span class="n">2</span><p><span class="mono">oattach</span> on the laptop discovers the password from the pod serve logs — and <b>verifies it against the live serve</b> before launch.</p></li>
+      <li class="hop" data-step="3"><span class="n">3</span><p>The TUI runs <b>locally</b>, so the clipboard just works: Ctrl+V pastes a laptop screenshot into the remote session, and copy lands back on the laptop clipboard.</p></li>
+    </ol>
+    <p class="say" data-step="4">Only the <b>prompt content</b> rides the link.</p>
+  </div>
+  <p class="foot">The serve spawns through the runtime's mediated exec path — 0.1.8-pre.33 denies egress to oc-exec-spawned processes.</p>
+  <aside class="notes">
+    <p>Attach. The pod is already running an <strong>opencode serve</strong> — daemon-managed, on a port derived from the qualified sandbox id itself. If it dies, the sync pass respawns it. Self-healing, like everything else here.</p>
+    <p>[click] From the laptop it's one command: <strong>oattach</strong>. It discovers the password from the pod's serve logs — and verifies it against the live serve before launching anything. No secret in a config file, no secret baked into an image.</p>
+    <p>[click] And the part you actually feel: the TUI runs <strong>locally</strong>, so the clipboard just works. [pause: paste the screenshot] Ctrl+V — a laptop screenshot lands in the remote session, and GLM sees it. Copy a selection over there and it lands back on the laptop clipboard. Only the prompt content rides the link.</p>
+  </aside>
+</section>
+
+<!-- ═══ 16 · THE REVERSE-FORWARD (M9) ═══ -->
+<section class="slide" data-seconds="45" data-coach="Point at the cards left to right. 'Fallback only' is the line the security people came for.">
+  <p class="kicker">The attach path · M9</p>
+  <h2>Attach without a VPN.</h2>
+  <div class="stage" aria-hidden="true">
+    <div class="opts3">
+      <div class="opt" data-step="1" style="--d:.0s"><h3>One outbound dial</h3><p>The daemon dials OUT: daemon → relay → agent — the same topology as the sync path. Zero inbound listeners.</p><span class="verdict" style="border-color:var(--green); color:var(--green);">no inbound path to defend</span></div>
+      <div class="opt" data-step="2" style="--d:.15s"><h3>Loopback listener</h3><p>On the laptop — same derived port, protocol <span class="mono">/sync-agent-pvc/forward/1</span> — binds <b>iff</b> the agent link is up.</p><span class="verdict" style="border-color:var(--green); color:var(--green);">link down = port closed</span></div>
+      <div class="opt" data-step="3" style="--d:.3s"><h3>Nothing else in the path</h3><p>No openshell, no OIDC, no Route in the attach data path. The openshell forward is <b>fallback only</b>.</p><span class="verdict" style="border-color:var(--green); color:var(--green);">no cluster privileges needed</span></div>
+    </div>
+    <p class="say" data-step="4">The attach path rides <b>the sync link</b> — one more protocol stream, nothing new exposed.</p>
+  </div>
+  <p class="foot">Dial-out only · the relay sees encrypted libp2p streams.</p>
+  <aside class="notes">
+    <p>So how do you reach a serve inside a pod with no VPN and no Route? The same way the sync happens: the daemon dials <strong>out</strong>. Daemon → relay → agent — one outbound dial, zero inbound listeners.</p>
+    <p>[click] On the laptop, a loopback listener on the same derived port — protocol <strong>sync-agent-pvc/forward/1</strong> — and it binds <strong>iff</strong> the agent link is up. Link down, port closed. The port never lies about the link.</p>
+    <p>[click] And that's the whole attach data path: no openshell, no OIDC, no Route — the openshell forward is fallback only. The relay sees encrypted libp2p streams and nothing else.</p>
+  </aside>
+</section>
+
+<!-- ═══ 17 · WAR STORY: IDENTITIES ═══ -->
+<section class="slide" data-seconds="40" data-coach="Tell it as a war story: it worked, then it flapped, then the fix was one derivation line.">
+  <p class="kicker">A war story · identities</p>
+  <h2>One peer. One reservation.</h2>
+  <div class="stage" aria-hidden="true">
+    <div class="cases">
+      <div class="case" data-step="1"><span class="when">the relay's rule</span><span class="then">one reservation per peer id</span><p class="how">two roles rode one peer — sync + tunnel listener on one identity — and the relay <b class="a">mis-resolved its reservations</b>: the tunnel flapped</p></div>
+      <div class="case" data-step="2"><span class="when">the 0.1.8 fix</span><span class="then"><b class="g">a dedicated tunnel peer</b></span><p class="how">blake3(master key, <span class="mono">"sync-agent-pvc/v1/tunnel"</span>) — the listener derives its own identity</p></div>
+      <div class="case" data-step="3"><span class="when">the rule now</span><span class="then"><b class="g">identity = role</b></span><p class="how">sync and the forward keep the sync identity — one role, one peer, one reservation</p></div>
+    </div>
+    <p class="say" data-step="4">One peer, one connection, <b>one reservation</b>.</p>
+  </div>
+  <p class="foot">identity = role — the fix that made 8/8 handshakes pass.</p>
+  <aside class="notes">
+    <p>A war story from the identity layer. The relay hands out <strong>one reservation per peer id</strong> — and two roles were riding one peer: the sync connection and the tunnel listener. The relay mis-resolved its reservations, and the tunnel flapped in ways that took an afternoon to name.</p>
+    <p>[click] The 0.1.8 fix is one derivation: the tunnel listener gets a <strong>dedicated peer</strong> — blake3 of the master key and "sync-agent-pvc/v1/tunnel" — while sync and the forward keep the sync identity. One role, one peer, one reservation. The receipt: 8/8 handshakes passed.</p>
+  </aside>
+</section>
+
+<!-- ═══ 18 · SELF-MANAGING AGENTS ═══ -->
 <section class="slide" data-seconds="50" data-coach="The drift story is the one that matters: sandboxes get rebuilt, the agent heals.">
   <p class="kicker">Operations · self-managing agents</p>
   <h2>The daemon installs, upgrades, and health-checks the agent — every pass.</h2>
@@ -372,7 +431,7 @@
   </aside>
 </section>
 
-<!-- ═══ 16 · DASHBOARD ═══ -->
+<!-- ═══ 19 · DASHBOARD ═══ -->
 <section class="slide" data-seconds="45" data-coach="Give the screenshot five seconds of silence — it sells itself.">
   <p class="kicker">Operations · the dashboard</p>
   <h2>A real dashboard — with a dry-run before you trust it.</h2>
@@ -393,10 +452,10 @@
   </aside>
 </section>
 
-<!-- ═══ 17 · STATUS (checkpoint) ═══ -->
+<!-- ═══ 20 · STATUS (checkpoint) ═══ -->
 <section class="slide" data-seconds="40" data-checkpoint="Status" data-coach="Read the strip left to right, one breath. The chaos gate is the receipt for M6.">
   <p class="kicker">Status · November 2026</p>
-  <h2>M0 through M7: shipped, tested, hardened.</h2>
+  <h2>M0 through M9: shipped, tested, verified.</h2>
   <div class="stage" aria-hidden="true">
     <div class="mstones">
       <span data-step="1" style="--d:0s">M0.0 <small>cluster prep</small></span>
@@ -409,20 +468,22 @@
       <span data-step="1" style="--d:.42s">M5 <small>memory broker</small></span>
       <span data-step="1" style="--d:.48s">M6 <small>hardening</small></span>
       <span data-step="1" style="--d:.54s">M7 <small>docs</small></span>
+      <span data-step="1" style="--d:.6s">M8 <small>attach</small></span>
+      <span data-step="1" style="--d:.66s">M9 <small>forward</small></span>
     </div>
     <div style="display:flex; align-items:baseline; gap:16px; margin-top:26px;" data-step="2">
-      <b class="huge" style="font-size:96px; color:var(--green);">280+</b>
-      <span class="plain">tests green · clippy clean · the M6 <b>chaos gate</b> throws kill −9, corrupt archives, clock skew, and mass deletions at it</span>
+      <b class="huge" style="font-size:96px; color:var(--green);">294</b>
+      <span class="plain">tests green · clippy clean · the M6 <b>chaos gate</b> throws kill −9, corrupt archives, clock skew, and mass deletions at it · the attach path verified <b>e2e</b> — paste, copy, and GLM inference over the link</span>
     </div>
   </div>
   <p class="foot">Repo README status table, Nov 2026 · plan of record: ~/.opencode/plan/sync-agent-pvc.md (local).</p>
   <aside class="notes">
-    <p>Where it stands: every milestone from cluster prep through hardening and docs is <strong>done</strong>.</p>
-    <p>[click] And the receipt for M6: a chaos gate that throws <strong>kill −9, corrupt archives, clock skew, and mass deletions</strong> at the engine. 280-plus tests green, clippy clean.</p>
+    <p>Where it stands: every milestone from cluster prep through the attach path is <strong>done</strong>.</p>
+    <p>[click] And the receipts: the M6 chaos gate throws <strong>kill −9, corrupt archives, clock skew, and mass deletions</strong> at the engine — and the attach path is verified end to end: paste, copy, and GLM inference over the link. 294 tests green, clippy clean.</p>
   </aside>
 </section>
 
-<!-- ═══ 18 · CLOSE ═══ -->
+<!-- ═══ 21 · CLOSE ═══ -->
 <section class="slide title end" data-seconds="38" data-coach="Leave the slide up while people scan. The FAQ link absorbs the hard questions.">
   <p class="kicker">Your Laptop Is the Durable Tier</p>
   <h1>Two real disks.<br>One honest protocol.</h1>
@@ -531,7 +592,7 @@ tunnel_services = ["memory"]         # opt this target into the tunnel</pre>
     <div class="crate"><h3>crates/agent</h3><p>Remote agent: serve (exec/stdio) · p2p driver · tunnel client + spool · MCP server · self-installing binaries.</p><p class="deps">deps: <b>proto</b></p></div>
     <div class="crate"><h3>crates/cli</h3><p>Laptop daemon: per-target pass loops · localhost API + vendored PatternFly UI · P2P/exec transports · tunnel service + allowlist.</p><p class="deps">deps: <b>core → proto</b></p></div>
   </div>
-  <p class="foot">Rust 2024, one workspace · 280+ tests green · clippy clean.</p>
+  <p class="foot">Rust 2024, one workspace · 294 tests green · clippy clean.</p>
   <aside class="notes"><p>Four crates, no framework. The engine never talks to the network; the agent never owns policy.</p></aside>
 </section>
 

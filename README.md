@@ -7,8 +7,8 @@ agents running in OpenShell sandboxes work with real local context — over a no
 P2P link that survives NAT, cluster outages, and your laptop being shut — plus a
 **default-deny tunnel** that gives sandbox agents the laptop's memory MCP as if it were local.
 
-[![status](https://img.shields.io/badge/status-M6%20hardened-3fb950)](#status)
-[![tests](https://img.shields.io/badge/tests-287%20passing-3fb950)](#status)
+[![status](https://img.shields.io/badge/status-M9%20attach%20verified-3fb950)](#status)
+[![tests](https://img.shields.io/badge/tests-294%20passing-3fb950)](#status)
 [![rust](https://img.shields.io/badge/rust-2024%20edition-dea584?logo=rust)](https://rustlang.org)
 [![flow story](https://img.shields.io/badge/%F0%9F%8E%AC%20flow%20story-live%20on%20Pages-58a6ff)](https://eformat.github.io/sync-agent-pvc/)
 
@@ -41,6 +41,11 @@ along. (Noel asked the hard questions — [he's answered below](#noel-asked-the-
   with the *same tools* (memory_store, memory_search, …). The laptop allowlist is
   **default-deny**: agents can't opt themselves in. Offline writes spool and flush
   idempotently on reconnect.
+- 📋 **Clipboard across the boundary** — `oattach` opens the laptop TUI on the pod's own
+  `opencode serve`: you land in `/sandbox`, Ctrl+V pastes a laptop screenshot into the
+  remote session, and copy lands back on the laptop clipboard — both directions verified.
+- 🔄 **`oattach restart`** — a wedged serve is a one-liner: the daemon kills and respawns
+  it, the wrapper polls the port and re-attaches with the fresh password. No pod login.
 - 🛠️ **Self-managing agents** — the daemon provisions, upgrades, and health-checks the
   in-sandbox agent every pass (version drift → re-provision); the dashboard surfaces agent
   version, tunnel args, and MCP health per target.
@@ -134,6 +139,13 @@ agent has the same tools as laptop OpenCode.
 > **One-time cluster prep** (OpenShell on OpenShift, SCC + Route + egress): see
 > [docs/m0.0-runbook.md](docs/m0.0-runbook.md) and `deploy/chart/`.
 
+Attach — drive the pod's OpenCode from the laptop:
+
+```bash
+oattach        # the TUI opens connected to the pod's opencode — you land in /sandbox
+# Ctrl+V pastes a screenshot from the laptop clipboard into the remote session
+```
+
 ## Noel asked the hard questions 🎤
 
 Noel opened with *"you just reinvented NFS"*, then followed with
@@ -204,8 +216,10 @@ the source of truth.
 | M5 | memory access broker: tunnel + allowlist + spool + Sync-UI | ✅ e2e gate passed |
 | M6 | hardening: empty-overwrite guard, install-versioning fix, control-state relocation, first-run dry-run, wizard presets + collision guard, self-inversion contract, pass tracing, chaos gate | ✅ |
 | M7 | docs: README, ARCHITECTURE (mermaid), Pages flow story, screenshots | ✅ this |
+| M8 | clipboard/attach: pod-side `opencode serve` + `oattach` + paste/copy both directions | ✅ e2e verified |
+| M9 | p2p reverse-forward: attach to the pod's opencode with no openshell/OIDC in the data path | ✅ e2e verified |
 
-**281 tests green · clippy clean.** The plan of record lives at
+**294 tests green · clippy clean.** The plan of record lives at
 `~/.opencode/plan/sync-agent-pvc.md` (local; not in git).
 
 ## Docs

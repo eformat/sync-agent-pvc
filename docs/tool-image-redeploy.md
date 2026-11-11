@@ -120,6 +120,16 @@ oc -n openshell exec default--sync-oc -- /tmp/sync-agent install /tmp/sync-agent
 openshell sandbox upload sync-oc ~/.config/sync-agent-pvc/master.key /sandbox/.sync-agent/master.key --no-git-ignore
 oc -n openshell exec default--sync-oc -- chmod 0600 /sandbox/.sync-agent/master.key
 
+# 3b. REGISTER THE NEW AGENT PATH IN THE POLICY — REQUIRED when step 3
+#     installed a NEW agents/<ver> version (learned 2026-11-11): the
+#     0.1.8-pre.33 supervisor matches the policy binaries list against the
+#     RESOLVED path, and agents/<ver> rolls every deploy — the relay entry's
+#     old binary paths stop matching → transparent_tcp_policy_denied even for
+#     mediated dials. Register the new version's paths (both layouts):
+openshell policy update sync-oc -g openshift --add-endpoint 52.64.89.26:4001 \
+  --binary /sandbox/.opencode/.sync-agent/agents/<ver>/sync-agent \
+  --binary /sandbox/.sync-agent/agents/<ver>/sync-agent
+
 # 4. Write opencode.json + AGENTS.md — both are versioned repo files
 #    (deploy/bootstrap/). The provider attach delivers the KEY but NOT
 #    OPENAI_BASE_URL (config keys are not injected as env), so baseURL must be
@@ -155,6 +165,13 @@ done
 # → expect "applied N ... archive advanced" within ~2 passes, conflicts 0.
 # (Design option for later: key the archive on the sandbox UUID so a recreated
 #  sandbox auto-resets — no manual step, no halt deadlock.)
+
+# 5c. THE AGENT SPAWN MUST BE MEDIATED — REQUIRED on 0.1.8-pre.33+: the
+#     sandbox runtime's network_broker egress-denies every oc-exec-spawned
+#     process (DNS AND TCP), so an agent spawned by hand via `oc exec` comes
+#     up unable to dial the relay or resolve anything. The daemon spawns it
+#     through the mediated `openshell sandbox exec` path since 0.1.8
+#     (agent_spawn_script; oc-exec fallback) — let it, don't hand-spawn.
 
 # 6. OPTIONAL — give the agent the oc toolbox its kubeconfig (2.2.6-tools image
 #    only). DECIDE THE TOKEN SCOPE FIRST: the kubeconfig token carries
