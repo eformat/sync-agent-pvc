@@ -3487,7 +3487,7 @@ dependencies = [
 
 [[package]]
 name = "sync-agent"
-version = "0.1.5"
+version = "0.1.8"
 dependencies = [
  "bincode",
  "blake3",
@@ -3509,7 +3509,7 @@ dependencies = [
 
 [[package]]
 name = "sync-cli"
-version = "0.1.5"
+version = "0.1.8"
 dependencies = [
  "axum",
  "bincode",
@@ -3535,7 +3535,7 @@ dependencies = [
 
 [[package]]
 name = "sync-core"
-version = "0.1.5"
+version = "0.1.8"
 dependencies = [
  "bincode",
  "blake3",
@@ -3548,7 +3548,7 @@ dependencies = [
 
 [[package]]
 name = "sync-proto"
-version = "0.1.5"
+version = "0.1.8"
 dependencies = [
  "bincode",
  "blake3",
@@ -3560,7 +3560,7 @@ dependencies = [
 
 [[package]]
 name = "sync-relay"
-version = "0.1.5"
+version = "0.1.8"
 dependencies = [
  "futures",
  "libp2p",

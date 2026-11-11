@@ -367,13 +367,16 @@ impl SandboxStatus {
 /// restarts, distinct per target, inside a private-ish high range so it
 /// never collides with the sync agent's own listeners. Config
 /// `serve_port` overrides.
+///
+/// M9: the DEFAULT derivation lives in the proto crate
+/// ([`sync_proto::p2p::forward_serve_port`]) because the AGENT derives the
+/// same port from its sandbox id — the p2p forward's dial target must agree
+/// without a config channel.
 pub(crate) fn serve_port(cfg: &TargetConfig, qualified: &str) -> u16 {
     if let Some(p) = cfg.serve_port {
         return p;
     }
-    let h = blake3::hash(qualified.as_bytes());
-    let n = u32::from_le_bytes(h.as_bytes()[..4].try_into().expect("4 bytes"));
-    4100 + (n % 400) as u16
+    sync_proto::p2p::forward_serve_port(qualified)
 }
 
 /// The UI/API must never leave localhost: the daemon serves sync controls with
@@ -687,12 +690,6 @@ fn provision_script(cfg: &TargetConfig, qualified: &str) -> String {
         .iter()
         .map(|a| format!("*--tunnel\\ {}*", self_guard_safe(a)))
         .collect();
-    let tunnel_args = cfg
-        .tunnel_args
-        .iter()
-        .map(|a| format!(" --tunnel '{a}'"))
-        .collect::<Vec<_>>()
-        .join("");
     format!(
         r#"set -e
 mkdir -p '{root}' '{base}/.sync-agent' '/sandbox/.sync-agent'
@@ -717,6 +714,38 @@ for p in /proc/[0-9]*; do
 done
 [ "$STALE" != "0" ] && echo "killed $STALE stale agent(s); upgrading" && sleep 1
 [ "$OK" != "0" ] && echo "already-serving" && exit 0
+echo ready-to-spawn
+"#
+    )
+}
+
+/// The AGENT SPAWN alone — run through the MEDIATED exec path
+/// ([`run_remote_mediatted`]) by [`provision_agent`]. On the 0.1.8-pre.33
+/// sandbox runtime the network_broker egress-denies every process created via
+/// `oc exec` (DNS AND TCP), so an oc-exec-spawned agent cannot reach the relay
+/// (hit live 2026-11-11: "Failed to negotiate transport protocol(s)" on every
+/// relay dial). A process created through the CLI's mediated exec inherits the
+/// admission registration for life.
+fn agent_spawn_script(cfg: &TargetConfig, qualified: &str) -> String {
+    let root = cfg.root_remote.trim_end_matches('/');
+    let base = Path::new(root)
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "/sandbox".to_string());
+    let relay = cfg.relay.clone().unwrap_or_default();
+    let tunnel_args = cfg
+        .tunnel_args
+        .iter()
+        .map(|a| format!(" --tunnel '{a}'"))
+        .collect::<Vec<_>>()
+        .join("");
+    format!(
+        r#"set -e
+BIN=$(ls -1 {base}/.sync-agent/agents/*/sync-agent /sandbox/.sync-agent/agents/*/sync-agent 2>/dev/null | grep -v '/agents/current/' | sort -V | tail -1)
+[ -n "$BIN" ] || {{ echo "no agent binary to spawn"; exit 3; }}
+KEY='{base}/.sync-agent/master.key'
+[ -f "$KEY" ] || KEY='/sandbox/.sync-agent/master.key'
+[ -f "$KEY" ] || {{ echo "no master key"; exit 4; }}
 nohup "$BIN" p2p --relay '{relay}' --sandbox-id '{qualified}'   --master-key-file "$KEY" --root '{root}'{tunnel_args}   >> {base}/.sync-agent/p2p.log 2>&1 < /dev/null &
 sleep 5
 echo spawned
@@ -755,7 +784,7 @@ grep -q 'agents/current/sync-agent' /sandbox/.config/opencode/opencode.json 2>/d
 # same-uid), so cwd-based detection is impossible; the port allocation is
 # daemon-owned (deterministic per target), which makes the socket the truth.
 SERVE=0
-[ -r /proc/net/tcp ] && awk '$2 ~ /:{serve_port_hex}$/ && $4 == "0A"' /proc/net/tcp >/dev/null 2>&1 && SERVE=1
+[ -r /proc/net/tcp ] && awk '$2 ~ /:{serve_port_hex}$/ && $4 == "0A" {{ s=1 }} END {{ exit s ? 0 : 1 }}' /proc/net/tcp >/dev/null 2>&1 && SERVE=1
 echo "serve_ok=$SERVE"
 "#,
     )
@@ -803,7 +832,7 @@ fn probe_sandbox(cfg: &TargetConfig, qualified: &str, oc: &str) -> io::Result<Sa
 ///
 /// The pod resolves from the sandbox CR — the part BEFORE any `+` qualifier
 /// (`sync-oc+plan` is an AGENT identity inside the `default--sync-oc` pod).
-fn run_remote(cfg: &TargetConfig, oc: &str, script: &str) -> io::Result<String> {
+pub(crate) fn run_remote(cfg: &TargetConfig, oc: &str, script: &str) -> io::Result<String> {
     let base_sandbox = cfg.sandbox.split('+').next().unwrap_or(&cfg.sandbox);
     let workspace = cfg.workspace.as_deref().unwrap_or("default");
     let resolved =
@@ -833,6 +862,54 @@ fn run_remote(cfg: &TargetConfig, oc: &str, script: &str) -> io::Result<String> 
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Run `script` inside the sandbox through the MEDIATED exec path
+/// (`openshell sandbox exec`) instead of `oc exec`. On the 0.1.8-pre.33
+/// sandbox runtime the network_broker only relays DNS for sockets created
+/// under its syscall mediation — processes spawned via `oc exec` sit outside
+/// that regime, so an `opencode serve` spawned this way cannot resolve the
+/// model endpoint (hit live 2026-11-11: inference EAI_AGAIN while every
+/// tunnel/MCP path was green). Processes created through the CLI's exec are
+/// mediated, so their DNS works. Needs the openshell CLI + a live gateway
+/// session (falls back to `run_remote` at the call sites on any error).
+pub(crate) fn run_remote_mediatted(cfg: &TargetConfig, script: &str) -> io::Result<String> {
+    let base_sandbox = cfg.sandbox.split('+').next().unwrap_or(&cfg.sandbox);
+    let gateway = std::env::var("SYNC_AGENT_GATEWAY").unwrap_or_else(|_| "openshift".to_string());
+    let out = std::process::Command::new("openshell")
+        .args([
+            "sandbox",
+            "exec",
+            base_sandbox,
+            "-g",
+            &gateway,
+            "--",
+            "sh",
+            "-c",
+            script,
+        ])
+        .output()?;
+    if !out.status.success() {
+        return Err(io::Error::other(format!(
+            "mediated exec failed (exit {:?}): {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Serve remote exec with the mediated path preferred: `run_remote_mediatted`
+/// first (DNS-capable on the pre.33 runtime), `run_remote` (oc exec) as the
+/// fallback when the openshell CLI or the gateway session is unavailable.
+pub(crate) fn serve_remote(cfg: &TargetConfig, oc: &str, script: &str) -> io::Result<String> {
+    match run_remote_mediatted(cfg, script) {
+        Ok(out) => Ok(out),
+        Err(e) => {
+            eprintln!("daemon: mediated exec unavailable ({e}) — falling back to oc exec");
+            run_remote(cfg, oc, script)
+        }
+    }
+}
+
 /// The M8 serve (re)spawn script (pure — testable): ensures the target's
 /// serve port is LISTENING inside the sandbox — the attach workflow's server
 /// side. Idempotent:
@@ -851,17 +928,65 @@ fn serve_spawn_script(cfg: &TargetConfig, port: u16) -> String {
         .parent()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "/sandbox".to_string());
+    // The serve is SANDBOX-level (its port derives from the qualified sandbox
+    // id), and the attach workflow should land the TUI in the sandbox ROOT —
+    // not in the target's sync root (Mike: "i want to just land in /sandbox").
+    // The first path component of root_remote IS the sandbox root.
+    let sandbox_root = root
+        .split('/')
+        .take(2)
+        .collect::<Vec<_>>()
+        .join("/");
     let port_hex = format!("{:04X}", port);
     format!(
         r#"set -e
 command -v opencode >/dev/null 2>&1 || {{ echo "serve-missing-opencode"; exit 0; }}
-if awk '$2 ~ /:{port_hex}$/ && $4 == "0A"' /proc/net/tcp >/dev/null 2>&1; then
+if awk '$2 ~ /:{port_hex}$/ && $4 == "0A" {{ s=1 }} END {{ exit s ? 0 : 1 }}' /proc/net/tcp >/dev/null 2>&1; then
   echo "serve-already"; exit 0
 fi
-cd '{root}'
+cd '{sandbox_root}'
 nohup opencode serve --port {port} >> {base}/.sync-agent/serve.log 2>&1 < /dev/null &
 sleep 2
 echo serve-spawned
+"#
+    )
+}
+
+/// Restart the sandbox's daemon-owned serve (API route `serve-restart`): kill
+/// the serve processes for THIS port (SIGTERM, escalating to SIGKILL — the bun
+/// runtime ignores TERM live), wait for the socket to free, then re-run the
+/// spawn body (whose port gate is the safety net against a non-freed socket).
+/// Self-match-safe: the /proc scan pattern is bracketed and skips $$.
+pub(crate) fn serve_restart_script(cfg: &TargetConfig, port: u16) -> String {
+    let spawn = serve_spawn_script(cfg, port);
+    let port_hex = format!("{:04X}", port);
+    format!(
+        r#"set -e
+PIDS=""
+for p in /proc/[0-9]*; do
+  case "$p" in "/proc/$$") continue ;; esac
+  c=$(tr '\0' ' ' < $p/cmdline 2>/dev/null) || continue
+  case "$c" in
+    *"opencode [s]erve --port {port}"*) PIDS="$PIDS ${{p#/proc/}}" ;;
+  esac
+done
+if [ -n "$PIDS" ]; then
+  for pid in $PIDS; do kill -TERM "$pid" 2>/dev/null || true; done
+  i=0
+  while [ "$i" -lt 8 ]; do
+    if ! awk '$2 ~ /:{port_hex}$/ && $4 == "0A" {{ s=1 }} END {{ exit s ? 0 : 1 }}' /proc/net/tcp >/dev/null 2>&1; then break; fi
+    i=$((i+1))
+    if [ "$i" -eq 4 ]; then for pid in $PIDS; do kill -KILL "$pid" 2>/dev/null || true; done; fi
+    sleep 1
+  done
+  if awk '$2 ~ /:{port_hex}$/ && $4 == "0A" {{ s=1 }} END {{ exit s ? 0 : 1 }}' /proc/net/tcp >/dev/null 2>&1; then
+    echo "serve-restart-busy (port {port} never freed)"; exit 0
+  fi
+  echo "serve-restart: killed:$PIDS"
+else
+  echo "serve-restart: nothing running on {port}"
+fi
+{spawn}
 "#
     )
 }
@@ -912,7 +1037,7 @@ pub(crate) fn remove_target_in_config(config_path: &Path, name: &str) -> io::Res
 /// The qualified agent id for a target: `sandbox+name` unless the sandbox is
 /// already qualified (an established target whose config was flipped by a
 /// previous provision — re-qualifying would produce `sync-oc+plan+plan`).
-fn qualified_sandbox(cfg: &TargetConfig) -> String {
+pub(crate) fn qualified_sandbox(cfg: &TargetConfig) -> String {
     if cfg.sandbox.contains('+') {
         cfg.sandbox.clone()
     } else {
@@ -931,7 +1056,26 @@ fn provision_agent(shared: &TargetShared, oc: &str) -> io::Result<String> {
         let mut c = shared.cfg.write().unwrap();
         c.sandbox = qualified.clone();
     }
-    Ok(format!("{qualified} ({out})"))
+    // The SPAWN goes through the mediated exec path: on the 0.1.8-pre.33
+    // sandbox runtime an oc-exec-spawned agent is egress-denied by the
+    // network_broker (relay dials fail "Failed to negotiate"). The staged
+    // check + kill-stale ran via oc exec above; only the long-lived spawn
+    // needs the runtime's admission regime.
+    let mut detail = format!("{qualified} ({out})");
+    if !out.contains("already-serving") && !out.contains("root-already-served") {
+        match run_remote_mediatted(&cfg, &agent_spawn_script(&cfg, &qualified)) {
+            Ok(spawn_out) => detail = format!("{qualified} ({out} → {spawn_out}) [mediated]"),
+            Err(e) => {
+                eprintln!(
+                    "daemon: mediated agent spawn failed ({e}) — falling back to oc exec \
+                     (the agent will run but its egress is denied by the sandbox runtime)"
+                );
+                let spawn_out = run_remote(&cfg, oc, &agent_spawn_script(&cfg, &qualified))?;
+                detail = format!("{qualified} ({out} → {spawn_out}) [oc-exec fallback]");
+            }
+        }
+    }
+    Ok(detail)
 }
 
 /// Global per-pair engine state dir (2026-11-06: "move them to a global
@@ -1086,7 +1230,7 @@ fn run_pass(
                     // no respawn storm against a missing binary.
                     if cfg.serve.unwrap_or(true) && !status.serve_ok {
                         let port = serve_port(&cfg, &probe_qualified);
-                        match run_remote(&cfg, oc, &serve_spawn_script(&cfg, port)) {
+                        match serve_remote(&cfg, oc, &serve_spawn_script(&cfg, port)) {
                             Ok(out) => {
                                 let out = out.trim();
                                 if out == "serve-missing-opencode" {
@@ -1503,6 +1647,44 @@ pub fn run(config_path: &Path, bind_override: Option<&str>) -> io::Result<()> {
         let sh = spawn_target(tc.clone(), &oc, events.clone(), config_path.to_path_buf());
         map.insert(tc.name.clone(), sh);
     }
+    // M9: p2p reverse-forward runtimes (serve-enabled p2p targets) — the
+    // laptop attach path with no openshell/OIDC. Collected here (master key +
+    // ports resolve once), spawned onto the runtime below. A serve_port
+    // OVERRIDE is incompatible with the p2p forward (the agent dials the
+    // DERIVED port) — such targets fall back to the openshell forward.
+    let mut forward_runs: Vec<crate::forward::ForwardRun> = Vec::new();
+    let mut forward_statuses: Vec<std::sync::Arc<crate::forward::ForwardStatus>> = Vec::new();
+    for tc in &cfg.targets {
+        if tc.relay.is_none() || !tc.serve.unwrap_or(true) {
+            continue;
+        }
+        let qualified = qualified_sandbox(tc);
+        if tc.serve_port.is_some() {
+            eprintln!(
+                "daemon forward: {} — serve_port override set; p2p forward skipped (the agent dials the derived port), use the openshell forward",
+                tc.name
+            );
+            continue;
+        }
+        match load_master_key(&tc.to_target_args()) {
+            Ok(master) => {
+                let status = std::sync::Arc::new(crate::forward::ForwardStatus {
+                    target: tc.name.clone(),
+                    local_port: serve_port(tc, &qualified),
+                    ..Default::default()
+                });
+                forward_statuses.push(status.clone());
+                forward_runs.push(crate::forward::ForwardRun {
+                    relay: tc.relay.clone().unwrap_or_default(),
+                    qualified: qualified.clone(),
+                    master,
+                    local_port: serve_port(tc, &qualified),
+                    status,
+                });
+            }
+            Err(e) => eprintln!("daemon forward: {} DISABLED (master key: {e})", tc.name),
+        }
+    }
     // M5: resolve the tunnel synchronously (it owns the live-status handle the
     // API serves); a broken tunnel config logs loudly and never blocks the API.
     let tunnel_run = match crate::tunnel::prepare(&cfg) {
@@ -1521,6 +1703,7 @@ pub fn run(config_path: &Path, bind_override: Option<&str>) -> io::Result<()> {
         oc,
         config_path: config_path.to_path_buf(),
         tunnel_status,
+        forward_statuses,
     });
     spawn_config_watcher(config_path.to_path_buf(), state.clone());
     eprintln!(
@@ -1536,6 +1719,13 @@ pub fn run(config_path: &Path, bind_override: Option<&str>) -> io::Result<()> {
             tokio::spawn(async move {
                 if let Err(e) = crate::tunnel::run_service(run).await {
                     eprintln!("daemon tunnel: service stopped: {e}");
+                }
+            });
+        }
+        for run in forward_runs {
+            tokio::spawn(async move {
+                if let Err(e) = crate::forward::run_service(run).await {
+                    eprintln!("daemon forward: service stopped: {e}");
                 }
             });
         }
@@ -1971,17 +2161,24 @@ sandbox = "s2"
         };
         let script = provision_script(&cfg, "sync-oc+vllm");
         assert!(script.contains("mkdir -p '/sandbox/vllm'"), "{script}");
-        // The spawn line keeps the plain literal (only guard patterns are
-        // bracket-classed).
-        assert!(script.contains("--sandbox-id 'sync-oc+vllm'"), "{script}");
-        assert!(script.contains("--root '/sandbox/vllm'"), "{script}");
-        // The key path is resolved in-script (per-root base → shared fallback).
-        assert!(script.contains("--master-key-file \"$KEY\""), "{script}");
+        // 2026-11-11: the SPAWN moved OUT of the provision script — it runs
+        // through the mediated exec path (agent_spawn_script) so the agent's
+        // sockets land in the runtime's admission regime (oc-exec-spawned
+        // processes are egress-denied by the pre.33 network_broker). The
+        // provision script keeps only the guard patterns (bracket-classed).
+        assert!(
+            !script.contains("nohup"),
+            "the provision script must not spawn (mediated spawn owns it): {script}"
+        );
+        assert!(script.contains("ready-to-spawn"), "{script}");
+        assert!(
+            script.contains("[s]ync-oc+vllm") || script.contains("sync-oc+vllm"),
+            "the qualified guard pattern survives: {script}"
+        );
         assert!(
             script.contains("already-serving"),
             "idempotence guard: {script}"
         );
-        assert!(script.contains("nohup"), "detached spawn: {script}");
         assert!(
             script.contains("[s]ync-oc+vllm"),
             "bracket-classed guard: {script}"
@@ -2053,11 +2250,21 @@ sandbox = "sync-oc"
         );
         assert_eq!(other.first_run_dry_run, None);
 
-        // The provisioned spawn line carries the resolved args.
+        // The provisioned spawn line carries the resolved args — in the
+        // MEDIATED spawn script (the provision script only stages + kills).
+        let spawn = agent_spawn_script(plan, "sync-oc+plan");
+        assert!(
+            spawn.contains("--tunnel 'memory@7402:memory_store,memory_delete'"),
+            "the mediated spawn carries the tunnel spec: {spawn}"
+        );
+        assert!(
+            spawn.contains("--sandbox-id 'sync-oc+plan'"),
+            "the mediated spawn carries the qualified id: {spawn}"
+        );
         let script = provision_script(plan, "sync-oc+plan");
         assert!(
-            script.contains("--tunnel 'memory@7402:memory_store,memory_delete'"),
-            "provision spawns the agent with the tunnel spec: {script}"
+            !script.contains("nohup"),
+            "the provision script must not spawn: {script}"
         );
         // The root guard still matches (tunnel args ride AFTER --root);
         // self_guard_safe bracket-classes the pattern's first char, and the
@@ -2291,8 +2498,7 @@ tunnel_services = ["nosuch"]
     }
 
     #[test]
-    fn serve_spawn_script_is_idempotent_and_self_match_safe() {
-        let cfg = TargetConfig {
+    fn serve_spawn_script_is_idempotent_and_self_match_safe() {        let cfg = TargetConfig {
             name: "plan".into(),
             root: "/tmp/plan".into(),
             sandbox: "sync-oc+plan".into(),
@@ -2325,6 +2531,63 @@ tunnel_services = ["nosuch"]
             script.contains(&format!(":{hex}$")),
             "socket check keyed on port {port} (hex {hex}): {script}"
         );
+        assert!(
+            script.contains(&format!("nohup opencode serve --port {port}")),
+            "{script}"
+        );
+        // M9 follow-up: the serve roots at the SANDBOX root (the attach TUI
+        // lands there), not the target's sync root.
+        assert!(script.contains("cd '/sandbox'"), "{script}");
+        assert!(!script.contains("cd '/sandbox/.opencode/plan'"), "{script}");
+        // REGRESSION (2026-11-10): awk exits 0 on NO match — the bare pattern
+        // form made "serve-already" unconditional and the self-heal dead
+        // (serve_ok was vacuously true forever). The gate must exit non-zero
+        // when the socket is absent.
+        assert!(script.contains("END { exit s ? 0 : 1 }"), "{script}");
+    }
+
+    #[test]
+    fn serve_restart_script_kills_then_respawns() {
+        let cfg = TargetConfig {
+            name: "plan".into(),
+            root: "/tmp/plan".into(),
+            sandbox: "sync-oc+plan".into(),
+            workspace: None,
+            relay: Some("/ip4/203.0.113.7/tcp/4001/p2p/RELAY".into()),
+            excludes: vec![],
+            interval_secs: None,
+            debounce_ms: None,
+            master_key_file: None,
+            master_key_env: false,
+            kubeconfig: None,
+            root_remote: "/sandbox/.opencode/plan".into(),
+            auto_provision: true,
+            first_run_dry_run: None,
+            hole_punch: true,
+            tunnel_services: Vec::new(),
+            tunnel_args: Vec::new(),
+            serve: None,
+            serve_port: None,
+        };
+        let port = serve_port(&cfg, "sync-oc+plan");
+        let script = serve_restart_script(&cfg, port);
+        // The kill pattern is bracket-safe (the script's own cmdline contains
+        // the pattern text; the /proc scan must not self-match) and skips $$.
+        assert!(
+            script.contains(&format!("*\"opencode [s]erve --port {port}\"*")),
+            "{script}"
+        );
+        assert!(script.contains("\"/proc/$$\""), "{script}");
+        // TERM → wait → KILL escalation, and the busy path never respawns
+        // onto a socket that never freed.
+        assert!(script.contains("kill -TERM"), "{script}");
+        assert!(script.contains("kill -KILL"), "{script}");
+        assert!(script.contains("serve-restart-busy"), "{script}");
+        // Same awk regression guard as the spawn gate: the socket checks must
+        // be match-counting (awk alone exits 0 on no-match).
+        assert!(script.matches("END { exit s ? 0 : 1 }").count() >= 2, "{script}");
+        // The respawn body is the spawn script verbatim (cd /sandbox + nohup).
+        assert!(script.contains("cd '/sandbox'"), "{script}");
         assert!(
             script.contains(&format!("nohup opencode serve --port {port}")),
             "{script}"

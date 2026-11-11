@@ -65,6 +65,19 @@ pub fn derive_daemon_identity_seed(master: &[u8]) -> [u8; 32] {
     blake3::derive_key("sync-agent-pvc/v1/daemon", master)
 }
 
+/// The daemon's TUNNEL swarm identity — a SEPARATE derivation from the sync
+/// identity. The tunnel listener is the one peer OTHERS dial through the relay
+/// (its reservation must be unambiguous), and the daemon otherwise holds
+/// SEVERAL same-identity relay connections (sync per-pass dials + the M9
+/// forward client); relays intermittently mis-resolve reservations for a peer
+/// with multiple connections (hit live 2026-11-11: the agent's tunnel dials
+/// flapped "Relay has no reservation for destination" while the daemon's
+/// reservation was continuously renewed). A dedicated tunnel peer gives the
+/// reservation exactly one connection.
+pub fn derive_tunnel_identity_seed(master: &[u8]) -> [u8; 32] {
+    blake3::derive_key("sync-agent-pvc/v1/tunnel", master)
+}
+
 /// The exact bytes an agent sends to open a tunnel for `service`:
 /// MAGIC(8) | VERSION(1) | name_len(1) | name.
 pub fn tunnel_request_bytes(service: &str) -> Result<Vec<u8>, String> {
@@ -112,6 +125,77 @@ pub fn derive_sandbox_identity_seed(master: &[u8], sandbox_id: &str) -> [u8; 32]
         &format!("sync-agent-pvc/v1/sandbox/{sandbox_id}"),
         master,
     )
+}
+
+// ---------------------------------------------------------------------------
+// M9 reverse-forward (the DAEMON dials the agent; the agent bridges the stream
+// to the pod-local `opencode serve` — the laptop `opencode --server` attach
+// path with NO openshell/OIDC in the loop). Separate protocol id from the
+// tunnel per the M3.5 wire-index lesson: touching a shared enum's variants
+// silently shifts every later index; a distinct StreamProtocol can never
+// collide.
+// ---------------------------------------------------------------------------
+
+/// libp2p application protocol the reverse-forward rides.
+pub const FORWARD_STREAM_PROTOCOL: &str = "/sync-agent-pvc/forward/1";
+
+/// Forward handshake magic (daemon → agent, first bytes of every forward stream).
+pub const FORWARD_MAGIC: &[u8; 8] = b"SAPVFWD1";
+/// Forward handshake version.
+pub const FORWARD_VERSION: u8 = 1;
+
+/// Agent → daemon status byte, the agent's entire reply to the handshake.
+pub const FORWARD_STATUS_OK: u8 = 0;
+pub const FORWARD_STATUS_UNAUTHORIZED_PEER: u8 = 1;
+pub const FORWARD_STATUS_UPSTREAM_UNAVAILABLE: u8 = 2;
+pub const FORWARD_STATUS_BAD_HANDSHAKE: u8 = 3;
+
+/// Human name for a forward status byte (agent-side refusals + daemon logs).
+pub fn forward_status_name(status: u8) -> &'static str {
+    match status {
+        FORWARD_STATUS_OK => "ok",
+        FORWARD_STATUS_UNAUTHORIZED_PEER => "unauthorized peer (not the derived daemon identity)",
+        FORWARD_STATUS_UPSTREAM_UNAVAILABLE => "pod-local serve unreachable",
+        FORWARD_STATUS_BAD_HANDSHAKE => "bad handshake",
+        _ => "unknown status",
+    }
+}
+
+/// The deterministic per-target `opencode serve` port — SHARED by the daemon
+/// (spawn scripts + laptop-side listener) and the agent (the TCP dial target).
+/// blake3 hash of the qualified sandbox id → 4100 + n%400: stable across
+/// restarts, distinct per target, clear of the sync agent's own listeners.
+pub fn forward_serve_port(qualified: &str) -> u16 {
+    let h = blake3::hash(qualified.as_bytes());
+    let n = u32::from_le_bytes(h.as_bytes()[..4].try_into().expect("4 bytes"));
+    4100 + (n % 400) as u16
+}
+
+/// The exact bytes the daemon sends to open a forward: MAGIC(8) | VERSION(1).
+/// Deliberately port-less: the agent dials ITS OWN derived serve port
+/// ([`forward_serve_port`] of its sandbox id) — the daemon never asserts a
+/// port the agent must trust.
+pub fn forward_request_bytes() -> Vec<u8> {
+    let mut out = Vec::with_capacity(9);
+    out.extend_from_slice(FORWARD_MAGIC);
+    out.push(FORWARD_VERSION);
+    out
+}
+
+/// Agent-side validation of a forward request (the first 9 stream bytes).
+/// `Ok(())` on a valid daemon handshake; `Err(status)` is the status byte the
+/// agent must reply with before closing.
+pub fn parse_forward_request(buf: &[u8]) -> Result<(), u8> {
+    if buf.len() < 9 {
+        return Err(FORWARD_STATUS_BAD_HANDSHAKE);
+    }
+    if &buf[..8] != FORWARD_MAGIC {
+        return Err(FORWARD_STATUS_BAD_HANDSHAKE);
+    }
+    if buf[8] != FORWARD_VERSION {
+        return Err(FORWARD_STATUS_BAD_HANDSHAKE);
+    }
+    Ok(())
 }
 
 /// Parse a 64-hex-char master key from a string (env value or file content).
@@ -171,6 +255,11 @@ mod tests {
             derive_sandbox_identity_seed(&[7u8; 32], "x"),
             "domain-separated from the sandbox derivation"
         );
+        // The tunnel identity is a DIFFERENT peer from the sync identity (the
+        // relay must never see multiple roles on one peer's reservation).
+        let t = derive_tunnel_identity_seed(&[7u8; 32]);
+        assert_ne!(t, a1, "tunnel peer ≠ sync peer (domain-separated)");
+        assert_ne!(t, derive_tunnel_identity_seed(&[8u8; 32]));
     }
 
     #[test]
@@ -208,8 +297,38 @@ mod tests {
     }
 
     #[test]
-    fn tunnel_status_names_cover_the_protocol() {
-        for s in [
+    fn forward_handshake_round_trips_and_rejects() {
+        let req = forward_request_bytes();
+        assert_eq!(req.len(), 9);
+        assert_eq!(parse_forward_request(&req), Ok(()));
+        let mut bad = req.clone();
+        bad[8] = 99;
+        assert_eq!(parse_forward_request(&bad), Err(FORWARD_STATUS_BAD_HANDSHAKE));
+        assert_eq!(parse_forward_request(&req[..8]), Err(FORWARD_STATUS_BAD_HANDSHAKE));
+        assert_eq!(parse_forward_request(&[]), Err(FORWARD_STATUS_BAD_HANDSHAKE));
+        // Domain separation: the tunnel magic must NEVER validate as forward.
+        let mut mixed = forward_request_bytes();
+        mixed[..8].copy_from_slice(TUNNEL_MAGIC);
+        assert_eq!(parse_forward_request(&mixed), Err(FORWARD_STATUS_BAD_HANDSHAKE));
+    }
+
+    #[test]
+    fn forward_serve_port_is_deterministic_in_range_and_distinct() {
+        let a = forward_serve_port("sync-oc+plan");
+        assert_eq!(a, forward_serve_port("sync-oc+plan"), "stable across processes");
+        assert!((4100..4500).contains(&a), "inside the reserved range: {a}");
+        // Distinctness across a realistic target set (hash collisions in a
+        // 400-wide range would silently cross-wire two targets' forwards).
+        let ports: Vec<u16> = ["sync-oc+plan", "sync-oc+demo-platform-investigate", "sync-oc+ph-rhaibu"]
+            .iter()
+            .map(|q| forward_serve_port(q))
+            .collect();
+        let unique: std::collections::HashSet<u16> = ports.iter().copied().collect();
+        assert_eq!(unique.len(), ports.len(), "no collisions: {ports:?}");
+    }
+
+    #[test]
+    fn tunnel_status_names_cover_the_protocol() {        for s in [
             TUNNEL_STATUS_OK,
             TUNNEL_STATUS_UNKNOWN_SERVICE,
             TUNNEL_STATUS_UNAUTHORIZED_PEER,

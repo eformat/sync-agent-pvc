@@ -95,7 +95,21 @@ export interface TunnelStatus {
   enabled: boolean;
   link: TunnelLinkStatus;
   services: TunnelServiceStatus[];
+  /** M9: the p2p reverse-forwards (one per serve-enabled p2p target). */
+  forwards?: ForwardStatus[];
   daemon_version?: string;
+}
+
+/** M9: the attach path's live state (laptop listener IFF the agent link is up). */
+export interface ForwardStatus {
+  target: string;
+  local_port: number;
+  /** "dialing" | "up" | "down" — the agent link, not the listener. */
+  agent_link: string;
+  /** "relayed" | "direct" — how the agent link actually came up. */
+  path: string;
+  listening: boolean;
+  active_conns: number;
 }
 
 /** SSE `snapshot` event payload on /api/events */

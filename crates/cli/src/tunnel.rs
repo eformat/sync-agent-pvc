@@ -53,7 +53,7 @@ use libp2p::{
 use serde::{Deserialize, Serialize};
 
 use sync_proto::p2p::{
-    derive_daemon_identity_seed, parse_tunnel_request, tunnel_status_name, TUNNEL_MAX_SERVICE_NAME,
+    derive_tunnel_identity_seed, parse_tunnel_request, tunnel_status_name, TUNNEL_MAX_SERVICE_NAME,
     TUNNEL_STATUS_BAD_HANDSHAKE, TUNNEL_STATUS_OK, TUNNEL_STATUS_UNAUTHORIZED_PEER,
     TUNNEL_STATUS_UNKNOWN_SERVICE, TUNNEL_STATUS_UPSTREAM_UNAVAILABLE, TUNNEL_STREAM_PROTOCOL,
 };
@@ -815,12 +815,12 @@ impl TunnelStatusHandle {
 /// here are startup failures only; connection-level failures are logged and
 /// never kill the loop.
 pub async fn run_service(run: TunnelRun) -> Result<(), String> {
-    let seed = derive_daemon_identity_seed(&run.master);
+    let seed = derive_tunnel_identity_seed(&run.master);
     let keypair = identity::Keypair::ed25519_from_bytes(seed)
         .map_err(|e| format!("daemon identity seed: {e}"))?;
     let daemon_peer = keypair.public().to_peer_id();
     eprintln!(
-        "daemon tunnel: identity {daemon_peer} (derived from the defaults master key) — {} service(s) allowlisted: {:?}",
+        "daemon tunnel: TUNNEL identity {daemon_peer} (tunnel-domain derivation — a peer of its own at the relay) — {} service(s) allowlisted: {:?}",
         run.services.len(),
         {
             let mut names: Vec<&String> = run.services.keys().collect();
@@ -1434,7 +1434,7 @@ spool_tools = ["memory_store", "memory_delete"]
         let mut client_swarm = build_agent_swarm(client_kp);
         let mut control = client_swarm.behaviour().stream.new_control();
         let daemon_peer = {
-            let seed = derive_daemon_identity_seed(&master);
+            let seed = derive_tunnel_identity_seed(&master);
             identity::Keypair::ed25519_from_bytes(seed)
                 .expect("daemon seed")
                 .public()

@@ -44,9 +44,10 @@ use libp2p::{
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tokio_util::io::SyncIoBridge;
 
+use crate::forward;
 use crate::serve;
 use crate::tunnel::{self, TunnelServiceSpec};
-use sync_proto::p2p::{derive_daemon_identity_seed, derive_sandbox_identity_seed, P2P_STREAM_PROTOCOL};
+use sync_proto::p2p::{derive_sandbox_identity_seed, derive_tunnel_identity_seed, P2P_STREAM_PROTOCOL};
 
 /// Identify protocol string (lets the relay + daemon learn our observed address
 /// and protocol support; DCUtR requires identify on both sides).
@@ -376,9 +377,20 @@ impl AgentDriver {
             }
         }
         if let Some((peer, _)) = &self.daemon {
-            // Re-dial the daemon only over a HEALTHY relay link (the circuit
-            // dial rides it); the reservation handler covers the first dial.
-            if self.relay_connected && !self.daemon_connected.load(Ordering::SeqCst) && !self.daemon_dialing {
+            // GROUND TRUTH: the swarm's own connection registry outranks the
+            // event-derived flag. A flag stuck false (e.g. after a zombie
+            // tripwire, when a dial-to-connected-peer produces no new
+            // ConnectionEstablished) would silently early-out every request
+            // even though streams would work — hit live 2026-11-11.
+            if swarm.is_connected(peer) {
+                if !self.daemon_connected.swap(true, Ordering::SeqCst) {
+                    eprintln!("sync-agent p2p: daemon connection present (flag restored from the swarm)");
+                }
+                self.daemon_dialing = false;
+            } else if self.relay_connected && !self.daemon_connected.load(Ordering::SeqCst) && !self.daemon_dialing {
+                // Re-dial the daemon only over a HEALTHY relay link (the
+                // circuit dial rides it); the reservation handler covers the
+                // first dial.
                 let peer = *peer;
                 eprintln!("sync-agent p2p: re-dialing daemon tunnel target {peer}");
                 self.dial_daemon(swarm);
@@ -572,6 +584,7 @@ async fn drive_agent(
     mut swarm: AgentSwarm,
     mut incoming: libp2p_stream::IncomingStreams,
     mut driver: AgentDriver,
+    tunnel_wake: Arc<tokio::sync::Notify>,
 ) {
     driver.start(&mut swarm);
     loop {
@@ -593,6 +606,10 @@ async fn drive_agent(
                     None => std::future::pending::<()>().await,
                 }
             } => driver.tick(&mut swarm),
+            // A tunnel request hit the zombie circuit (link believed up, stream
+            // open failed): the handler cleared daemon_connected — schedule the
+            // re-dial tick now (none was pending; the link "never" went down).
+            _ = tunnel_wake.notified() => driver.schedule_retry(),
         }
     }
 }
@@ -636,7 +653,7 @@ fn setup_tunnel(cfg: &P2pConfig) -> Result<(libp2p::PeerId, Multiaddr), String> 
          circuit directly — the daemon PeerId is derived from the shared master key)"
             .to_string()
     })?;
-    let seed = derive_daemon_identity_seed(&cfg.master);
+    let seed = derive_tunnel_identity_seed(&cfg.master);
     let keypair = identity::Keypair::ed25519_from_bytes(seed)
         .map_err(|e| format!("daemon identity seed: {e}"))?;
     let daemon_peer = keypair.public().to_peer_id();
@@ -690,6 +707,9 @@ pub async fn run_agent(cfg: P2pConfig) -> Result<(), String> {
         }
     }
     let daemon_connected = Arc::new(AtomicBool::new(false));
+    // Wakes the driver's re-dial tick when a tunnel REQUEST discovers the
+    // daemon link is dead (the zombie-circuit case — no ConnectionClosed).
+    let tunnel_wake = Arc::new(tokio::sync::Notify::new());
     if let Some(daemon_peer) = daemon_target.as_ref().map(|(p, _)| *p) {
         let runtime = tunnel::TunnelRuntime {
             services: cfg.tunnel.clone(),
@@ -697,6 +717,7 @@ pub async fn run_agent(cfg: P2pConfig) -> Result<(), String> {
             daemon_peer,
             daemon_connected: daemon_connected.clone(),
             control: control.clone(),
+            wake: tunnel_wake.clone(),
         };
         tokio::spawn(async move {
             if let Err(e) = tunnel::run(runtime).await {
@@ -705,8 +726,25 @@ pub async fn run_agent(cfg: P2pConfig) -> Result<(), String> {
         });
     }
 
+    // M9: the reverse-forward accept loop — the daemon dials US to reach the
+    // pod-local `opencode serve` (the laptop attach path, no openshell).
+    // Always-on: authorization is the derived daemon peer (master-key holder
+    // only) and the dial target is 127.0.0.1-only, so an idle loop is inert.
+    {
+        let runtime = forward::ForwardRuntime {
+            control: control.clone(),
+            master: cfg.master,
+            sandbox_id: cfg.sandbox_id.clone(),
+        };
+        tokio::spawn(async move {
+            if let Err(e) = forward::run(runtime).await {
+                eprintln!("sync-agent forward: stopped: {e}");
+            }
+        });
+    }
+
     let driver = AgentDriver::new(cfg.root, cfg.protocol, &cfg.relay, daemon_target, daemon_connected);
-    drive_agent(swarm, incoming, driver).await;
+    drive_agent(swarm, incoming, driver, tunnel_wake).await;
     Ok(())
 }
 
@@ -1211,7 +1249,7 @@ mod tests {
             None,
             Arc::new(AtomicBool::new(false)),
         );
-        let agent_task = tokio::spawn(drive_agent(agent_swarm, incoming, driver));
+        let agent_task = tokio::spawn(drive_agent(agent_swarm, incoming, driver, Arc::new(tokio::sync::Notify::new())));
 
         // ---- mini daemon client ----
         let client_kp = identity::Keypair::generate_ed25519();
@@ -1240,6 +1278,221 @@ mod tests {
             !agent_task.is_finished(),
             "agent swarm died during sessions"
         );
+        agent_task.abort();
+        drop(root);
+    }
+
+    // ----- the M9 reverse-forward buildability proof -----
+
+    /// Dial the agent's circuit with retries (the reservation may still be
+    /// landing) — shared by the forward test's two clients.
+    async fn dial_agent_until_up(
+        swarm: &mut libp2p::Swarm<TestClientBehaviour>,
+        agent_peer: PeerId,
+        agent_circuit: Multiaddr,
+    ) -> std::io::Result<()> {
+        let mut dial_in_flight = false;
+        for attempt in 0..60 {
+            if !dial_in_flight {
+                let _ = swarm.dial(agent_circuit.clone());
+                dial_in_flight = true;
+            }
+            match tokio::time::timeout(Duration::from_millis(500), swarm.next()).await {
+                Ok(Some(SwarmEvent::ConnectionEstablished { peer_id, .. }))
+                    if peer_id == agent_peer =>
+                {
+                    return Ok(());
+                }
+                Ok(Some(SwarmEvent::OutgoingConnectionError {
+                    peer_id: Some(p),
+                    ..
+                })) if p == agent_peer => dial_in_flight = false,
+                Ok(Some(_)) => {}
+                Ok(None) => return Err(std::io::Error::other("client swarm ended")),
+                Err(_elapsed) => continue,
+            }
+            let _ = attempt;
+        }
+        Err(std::io::Error::other(
+            "relayed connection to the agent was never established",
+        ))
+    }
+
+    /// M9: the daemon (using the DERIVED daemon identity) dials the agent's
+    /// forward protocol through the relay; the agent authorizes the peer,
+    /// bridges to a stand-in pod serve on the derived port, and the bytes
+    /// round-trip. A stranger peer is refused with UNAUTHORIZED_PEER.
+    #[tokio::test]
+    async fn in_process_forward_loopback_daemon_identity_and_refusal() {
+        use sync_proto::p2p::{
+            forward_request_bytes, forward_serve_port, FORWARD_STATUS_OK,
+            FORWARD_STATUS_UNAUTHORIZED_PEER, FORWARD_STREAM_PROTOCOL,
+        };
+        let master = [9u8; 32];
+        let sandbox_id = "test";
+
+        // ---- relay node (the VPS stand-in) ----
+        let relay_kp = identity::Keypair::generate_ed25519();
+        let relay_peer = relay_kp.public().to_peer_id();
+        let mut relay_swarm = build_relay_swarm(relay_kp);
+        relay_swarm
+            .listen_on("/memory/0".parse::<Multiaddr>().unwrap())
+            .expect("relay listen on memory");
+        let relay_listen = loop {
+            match tokio::time::timeout(Duration::from_secs(10), relay_swarm.next()).await {
+                Ok(Some(SwarmEvent::NewListenAddr { address, .. })) => break address,
+                Ok(Some(_)) => continue,
+                Ok(None) => panic!("relay swarm ended"),
+                Err(_) => panic!("relay did not start listening in time"),
+            }
+        };
+        relay_swarm.add_external_address(relay_listen.clone());
+        tokio::spawn(async move {
+            while let Some(event) = relay_swarm.next().await {
+                if let SwarmEvent::Behaviour(TestRelayBehaviourEvent::Relay(_)) = event {
+                    eprintln!("test: relay event: {event:?}");
+                }
+            }
+        });
+        let relay_with_peer = relay_listen.clone().with(Protocol::P2p(relay_peer));
+
+        // ---- agent under test: REAL swarm + the REAL forward accept loop ----
+        let root = tempfile::tempdir().unwrap();
+        let agent_keypair = derive_keypair(&master, sandbox_id);
+        let agent_peer = agent_keypair.public().to_peer_id();
+        let agent_swarm = build_agent_swarm(agent_keypair).expect("agent swarm");
+        let mut agent_control = agent_swarm.behaviour().stream.new_control();
+        let incoming = agent_control
+            .accept(StreamProtocol::new(P2P_STREAM_PROTOCOL))
+            .expect("accept on fresh control");
+        let driver = AgentDriver::new(
+            root.path().to_path_buf(),
+            StreamProtocol::new(P2P_STREAM_PROTOCOL),
+            &relay_with_peer,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
+        let agent_task = tokio::spawn(drive_agent(agent_swarm, incoming, driver, Arc::new(tokio::sync::Notify::new())));
+
+        // The forward accept loop on a SECOND control of the SAME swarm.
+        let forward_control = agent_control.clone();
+        let fwd_task = tokio::spawn(forward::run(forward::ForwardRuntime {
+            control: forward_control,
+            master,
+            sandbox_id: sandbox_id.to_string(),
+        }));
+
+        // ---- the stand-in pod serve (what the agent's bridge dials) ----
+        let serve_port = forward_serve_port(sandbox_id);
+        let pod_serve = tokio::net::TcpListener::bind(("127.0.0.1", serve_port))
+            .await
+            .expect("stand-in serve binds the derived port");
+        let serve_task = tokio::spawn(async move {
+            // Streaming echo: read → write back, until the client half-closes.
+            // Accepts in a loop — the accept loop keeps serving (round 2+).
+            loop {
+                let Ok((mut sock, _)) = pod_serve.accept().await else { break };
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+                    let mut buf = [0u8; 64];
+                    loop {
+                        match sock.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                if sock.write_all(&buf[..n]).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+
+        // ---- authorized daemon client (the derived identity — the FORWARD
+        // role, which shares the sync identity by design) ----
+        let daemon_seed = sync_proto::p2p::derive_daemon_identity_seed(&master);
+        let daemon_kp = identity::Keypair::ed25519_from_bytes(daemon_seed)
+            .expect("daemon identity from seed");
+        let mut daemon_swarm = build_client_swarm(daemon_kp);
+        let daemon_control = daemon_swarm.behaviour().stream.new_control();
+        let agent_circuit = relay_with_peer
+            .clone()
+            .with(Protocol::P2pCircuit)
+            .with(Protocol::P2p(agent_peer));
+
+        // ---- stranger client (random identity — must be REFUSED) ----
+        let mut stranger_swarm = build_client_swarm(identity::Keypair::generate_ed25519());
+        let mut stranger_control = stranger_swarm.behaviour().stream.new_control();
+
+        dial_agent_until_up(&mut daemon_swarm, agent_peer, agent_circuit.clone())
+            .await
+            .expect("authorized daemon reaches the agent");
+        dial_agent_until_up(&mut stranger_swarm, agent_peer, agent_circuit.clone())
+            .await
+            .expect("stranger also connects at the transport layer");
+
+        // Stranger forward attempt: the agent checks the peer BEFORE reading
+        // anything — one status byte (UNAUTHORIZED_PEER), then close.
+        {
+            let stream = daemon_control
+                .clone()
+                .open_stream(agent_peer, StreamProtocol::new(FORWARD_STREAM_PROTOCOL))
+                .await
+                .expect("stranger open_stream (transport-level)");
+            drop(stream);
+            let mut stream = stranger_control
+                .open_stream(agent_peer, StreamProtocol::new(FORWARD_STREAM_PROTOCOL))
+                .await
+                .expect("stranger open_stream");
+            let mut status = [0u8; 1];
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                futures::AsyncReadExt::read_exact(&mut stream, &mut status),
+            )
+            .await
+            .expect("stranger gets a status byte in time")
+            .expect("status read");
+            assert_eq!(
+                status[0],
+                FORWARD_STATUS_UNAUTHORIZED_PEER,
+                "a stranger peer is refused, never bridged"
+            );
+        }
+
+        // Authorized daemon forward: handshake → OK → bytes round-trip
+        // through the pod serve, TWICE (the accept loop keeps serving).
+        for round in 0..2 {
+            let mut stream = daemon_control
+                .clone()
+                .open_stream(agent_peer, StreamProtocol::new(FORWARD_STREAM_PROTOCOL))
+                .await
+                .expect("daemon open_stream");
+            use futures::{AsyncReadExt as _, AsyncWriteExt as _};
+            stream.write_all(&forward_request_bytes()).await.expect("write");
+            let mut status = [0u8; 1];
+            stream.read_exact(&mut status).await.expect("status read");
+            assert_eq!(status[0], FORWARD_STATUS_OK, "round {round}: authorized");
+            let payload = format!("m9-{round}-hello");
+            stream.write_all(payload.as_bytes()).await.expect("payload write");
+            stream.flush().await.expect("flush");
+            // Half-close the write side so the stand-in serve's read hits EOF
+            // and it closes — the echo comes back through the pipe.
+            stream.close().await.expect("half-close");
+            let mut back = Vec::new();
+            stream.read_to_end(&mut back).await.expect("echo read");
+            assert_eq!(back, payload.as_bytes().to_vec(), "round {round}: pod-serve echo");
+            drop(stream);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        assert!(!fwd_task.is_finished(), "forward loop died");
+        assert!(
+            !agent_task.is_finished(),
+            "agent swarm died during forwards"
+        );
+        serve_task.abort();
+        fwd_task.abort();
         agent_task.abort();
         drop(root);
     }

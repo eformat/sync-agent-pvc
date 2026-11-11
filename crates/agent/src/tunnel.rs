@@ -492,6 +492,7 @@ async fn handle_client(
     daemon_peer: libp2p::PeerId,
     mut control: libp2p_stream::Control,
     daemon_connected: Arc<AtomicBool>,
+    wake: Arc<tokio::sync::Notify>,
     spool: Arc<SpoolStore>,
 ) {
     let _ = conn.set_nodelay(true);
@@ -506,6 +507,14 @@ async fn handle_client(
         Ok(p) => p,
         Err(e) => {
             eprintln!("sync-agent tunnel: {} DOWN ({e}) — serving the offline path", spec.name);
+            // A stream-open failure while the driver believes the link is up
+            // is the ZOMBIE signature: the daemon restarted (or its circuit
+            // died) and the relay never delivered a ConnectionClosed, so the
+            // driver would stay "connected" forever and every request would
+            // quietly hit this offline path (hit live 2026-11-11 — ~10h of a
+            // dead tunnel). Clear the flag and wake the driver's re-dial.
+            daemon_connected.store(false, Ordering::SeqCst);
+            wake.notify_one();
             return serve_down_path(conn, &spec, &spool).await;
         }
     };
@@ -690,6 +699,10 @@ pub struct TunnelRuntime {
     pub daemon_connected: Arc<AtomicBool>,
     /// A clone of the p2p swarm's stream control.
     pub control: libp2p_stream::Control,
+    /// Wakes the driver's re-dial tick when a REQUEST discovers the daemon
+    /// link is dead (the zombie case: the relay never delivers a
+    /// ConnectionClosed for a circuit whose far end restarted).
+    pub wake: Arc<tokio::sync::Notify>,
 }
 
 /// Run the tunnel client forever: one loopback listener per service + the
@@ -726,6 +739,7 @@ pub async fn run(rt: TunnelRuntime) -> Result<(), String> {
         let control = rt.control.clone();
         let daemon_peer = rt.daemon_peer;
         let connected2 = rt.daemon_connected.clone();
+        let wake2 = rt.wake.clone();
         let spool2 = spools.get(&spec.name).expect("just inserted").clone();
         tokio::spawn(async move {
             loop {
@@ -737,6 +751,7 @@ pub async fn run(rt: TunnelRuntime) -> Result<(), String> {
                             daemon_peer,
                             control.clone(),
                             connected2.clone(),
+                            wake2.clone(),
                             spool2.clone(),
                         ));
                     }
@@ -1062,8 +1077,9 @@ mod tests {
         });
         let relay_with_peer = relay_listen.with(Protocol::P2p(relay_peer));
 
-        // ---- mini daemon stand-in (the derived daemon identity) ----
-        let daemon_seed = sync_proto::p2p::derive_daemon_identity_seed(&master);
+        // ---- mini daemon stand-in (the derived TUNNEL identity — the agent
+        // dials the tunnel peer, not the sync peer) ----
+        let daemon_seed = sync_proto::p2p::derive_tunnel_identity_seed(&master);
         let daemon_kp = identity::Keypair::ed25519_from_bytes(daemon_seed).expect("daemon seed");
         let daemon_peer = daemon_kp.public().to_peer_id();
         let mut daemon_swarm = build_node_swarm(daemon_kp);

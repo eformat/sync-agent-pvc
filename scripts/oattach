@@ -18,10 +18,24 @@
 set -euo pipefail
 
 API="${SYNC_AGENT_API:-http://127.0.0.1:7391}"
+MODE="${1:-}"
+[ "$MODE" = "restart" ] && shift   # usage: oattach restart [target-name]
 TARGET="${1:-}"
 LPORT="${2:-}"
 
-read -r SBX SPORT TNAME < <(curl -fsS "$API/api/targets" | TARGET="$TARGET" python3 -c '
+# Fast-fail when the daemon itself is down (the poll below would otherwise
+# spin for 30s before saying anything useful).
+if ! curl -fsS "$API/api/health" >/dev/null 2>&1; then
+    echo "oattach: daemon not reachable at ${API} — systemctl --user status sync-agent"
+    exit 3
+fi
+
+# The daemon stamps serve_port on its FIRST pass after a restart (~30s — the
+# probe rides the pass). Poll briefly through that window instead of failing
+# instantly in it.
+SBX=""
+for i in 1 2 3 4 5 6; do
+    OUT=$(curl -fsS "$API/api/targets" 2>/dev/null | TARGET="$TARGET" python3 -c '
 import json, os, sys
 d = json.load(sys.stdin)
 ts = d if isinstance(d, list) else d.get("targets", [])
@@ -29,38 +43,105 @@ want = os.environ.get("TARGET", "")
 cands = [t for t in ts if (not want or t.get("name") == want)]
 cands = [t for t in cands if (t.get("sandbox_status") or {}).get("serve_port")]
 if not cands:
-    sys.stderr.write("oattach: no serve-capable p2p target found — is the daemon up and the target synced once?\n")
     sys.exit(3)
 t = cands[0]
 st = t["sandbox_status"]
 sbx = (t.get("sandbox") or "").split("+")[0] or t.get("sandbox", "")
 print(sbx, st["serve_port"], t["name"])
-')
-[ -n "${SBX:-}" ] || exit 3
+') && { read -r SBX SPORT TNAME <<< "$OUT"; break; }
+    [ "$i" = 1 ] && echo "oattach: target status not stamped yet (daemon just restarted?) — waiting for its first pass…"
+    sleep 5
+done
+[ -n "${SBX:-}" ] || {
+    echo "oattach: no serve-capable p2p target found — is the target synced (it must have completed one pass)?"
+    exit 3
+}
 SPORT="${LPORT:-$SPORT}"
 
-# Forward up? Probe through it. 000 = no listener → start one and re-probe.
+# restart mode: bounce the pod's daemon-owned serve via the daemon API
+# (kubeconfig oc exec — no openshell/OIDC), wait for it to answer, then fall
+# through into the normal attach. The NEW serve appends a fresh password to
+# the same log; the verify loop below picks the one that actually works.
+if [ "$MODE" = "restart" ]; then
+    echo "oattach: restarting the serve for ${TNAME} (port ${SPORT})…"
+    if ! OUT=$(curl -fsS -X POST "$API/api/targets/$TNAME/serve-restart" 2>&1); then
+        echo "oattach: restart request failed: $OUT"
+        exit 6
+    fi
+    echo "oattach: $OUT"
+    i=0
+    while [ "$i" -lt 40 ]; do
+        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:${SPORT}/doc" || true)
+        if [ "$code" = "200" ] || [ "$code" = "401" ]; then
+            echo "oattach: serve is back (probe $code after ~$((i * 2))s)"
+            break
+        fi
+        sleep 1.5
+        i=$((i + 1))
+    done
+fi
+
+# M9: the daemon's p2p forward listener binds 127.0.0.1:<serve_port> IFF the
+# agent link is up — probe it FIRST (no openshell, no auth expiry). Only fall
+# back to the openshell forward when the p2p listener is absent.
 code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${SPORT}/doc" || true)
-if [ "$code" = "000" ]; then
+if [ "$code" != "200" ] && [ "$code" != "401" ]; then
+    echo "oattach: p2p forward not answering on 127.0.0.1:${SPORT} (code ${code}) — falling back to the openshell forward"
     echo "oattach: starting forward 127.0.0.1:${SPORT} → sandbox ${SBX}"
     setsid openshell forward service "$SBX" --target-port "$SPORT" --local "$SPORT" \
         >> "${TMPDIR:-/tmp}/oattach-forward.log" 2>&1 &
     sleep 3
     code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${SPORT}/doc" || true)
 fi
-if [ "$code" = "000" ]; then
-    echo "oattach: forward up but the server is unreachable through it."
-    echo "  - 'invalid token: ExpiredSignature' in ${TMPDIR:-/tmp}/oattach-forward.log → openshell gateway login openshift"
-    echo "  - otherwise the daemon self-heals serve on the next sync pass (journalctl --user -u sync-agent.service)"
+if [ "$code" != "200" ] && [ "$code" != "401" ]; then
+    echo "oattach: server unreachable through both paths (code ${code})."
+    echo "  - p2p forward down → check journalctl --user -u sync-agent.service (the daemon re-dials automatically)"
+    echo "  - openshell fallback → openshell gateway login openshift, then re-run oattach"
     exit 4
 fi
 
-# Password straight from the pod's serve log into the environment (argv-safe).
-OPENCODE_SERVER_PASSWORD=$(openshell sandbox exec "$SBX" -- sh -c 'cat /sandbox/.opencode/serve.log /sandbox/.sync-agent/serve.log /sandbox/*/.sync-agent/serve.log 2>/dev/null' | sed -n 's/^server password //p' | tail -1)
+# Password: pull EVERY candidate from the pod's serve logs, then VERIFY each
+# against an authed route before attaching. Two live bugs this guards against
+# (both hit 2026-11-10):
+#  - discovery must use `find`, not a glob: /sandbox/*/.sync-agent/serve.log
+#    silently misses /sandbox/.opencode/.sync-agent/serve.log because shell
+#    globs don't cross dot-directories — the stale trial log then wins;
+#  - auth is HTTP BASIC (user "opencode", password = serve password), NOT
+#    Bearer — and /openapi.json is a route that 401s without it, so a wrong
+#    candidate is detected here instead of as a dead TUI.
+# Secrets stay in env/temp files (0600), never argv (Falcon).
+# BOTH names are exported: the v2.2.5 client prefers OPENCODE_PASSWORD and
+# only falls back to OPENCODE_SERVER_PASSWORD — and the vars must be exported
+# explicitly here (an env-prefix on the old `exec` line exported them for
+# free; a plain shell assignment does NOT reach opencode).
+export OPENCODE_PASSWORD=""
+export OPENCODE_SERVER_PASSWORD=""
+while read -r _LOGFILE PW; do
+    [ -n "$PW" ] || continue
+    cfg=$(mktemp "${TMPDIR:-/tmp}/oattach-pw.XXXXXX")
+    printf 'user = "opencode:%s"\n' "$PW" > "$cfg"
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -K "$cfg" "http://127.0.0.1:${SPORT}/openapi.json")
+    rm -f "$cfg"
+    if [ "$code" = "200" ]; then
+        OPENCODE_PASSWORD="$PW"
+        OPENCODE_SERVER_PASSWORD="$PW"
+        break
+    fi
+done < <(openshell sandbox exec "$SBX" -- sh -c '
+    find /sandbox -maxdepth 4 -name serve.log -type f 2>/dev/null | while IFS= read -r f; do
+        # one candidate PER password line (a restarted serve appends a new
+        # one to the same log — any of them may be the live one)
+        sed -n "s/^server password //p" "$f" | while IFS= read -r p; do
+            [ -n "$p" ] && printf "%s %s\n" "$f" "$p"
+        done
+    done')
 [ -n "${OPENCODE_SERVER_PASSWORD:-}" ] || {
-    echo "oattach: no 'server password' line in the pod serve logs — was serve started at all?"
+    echo "oattach: no serve-log password authenticates the serve on 127.0.0.1:${SPORT} (all candidates 401'd, or none found)."
+    echo "  - was serve started at all? The daemon self-heals it — check journalctl --user -u sync-agent.service"
     exit 5
 }
 
-echo "oattach: target ${TNAME} — attaching via 127.0.0.1:${SPORT}"
+dn=""
+[ -n "$TARGET" ] || dn=" (default — pass a target name only to choose among several)"
+echo "oattach: target ${TNAME}${dn} — attaching via 127.0.0.1:${SPORT}"
 exec opencode --server "http://127.0.0.1:${SPORT}"

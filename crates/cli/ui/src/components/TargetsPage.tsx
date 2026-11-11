@@ -127,9 +127,17 @@ export function TargetsPage({
         )}
         {tunnel?.enabled && (
           <StackItem>
-            <Alert variant={tunnel.link.agents > 0 ? "info" : "warning"} isInline title="Memory tunnel">
-              {tunnel.services.length === 0
-                ? "Enabled, but no services are allowlisted."
+            <Alert
+              variant={
+                tunnel.link.agents > 0 || (tunnel.forwards ?? []).some((f) => f.listening)
+                  ? "info"
+                  : "warning"
+              }
+              isInline
+              title="Tunnels"
+            >
+              {tunnel.services.length === 0 && (tunnel.forwards ?? []).length === 0
+                ? "Enabled, but no services or forwards are configured."
                 : tunnel.services.map((s) => (
                     <span
                       key={s.name}
@@ -150,6 +158,26 @@ export function TargetsPage({
                       </span>
                     </span>
                   ))}
+              {(tunnel.forwards ?? []).map((f) => (
+                <span
+                  key={f.target}
+                  style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
+                >
+                  <TransportLabel transport="p2p" />
+                  {f.agent_link === "up" && f.path && (
+                    <PathLabel transport="p2p" path={f.path} />
+                  )}
+                  <code className="mono">
+                    attach ({f.target}) → 127.0.0.1:{f.local_port}
+                  </code>
+                  <span>
+                    {f.agent_link === "up"
+                      ? `agent link up · ${f.active_conns} conn(s)`
+                      : `agent link ${f.agent_link}`}
+                    {f.listening ? "" : " · listener down"}
+                  </span>
+                </span>
+              ))}
             </Alert>
           </StackItem>
         )}

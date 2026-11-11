@@ -39,6 +39,9 @@ pub struct ApiState {
     /// M5 tunnel live status (None when the tunnel is disabled — the API then
     /// reports `{enabled: false, services: []}`).
     pub tunnel_status: Option<crate::tunnel::TunnelStatusHandle>,
+    /// M9 reverse-forward live statuses (one per serve-enabled p2p target;
+    /// rendered as the tunnel banner's attach rows).
+    pub forward_statuses: Vec<std::sync::Arc<crate::forward::ForwardStatus>>,
 }
 
 #[derive(RustEmbed)]
@@ -55,6 +58,7 @@ pub fn router(state: Arc<ApiState>) -> Router {
         .route("/api/targets/{name}/pause", post(pause))
         .route("/api/targets/{name}/resume", post(resume))
         .route("/api/targets/{name}/sync-now", post(sync_now))
+        .route("/api/targets/{name}/serve-restart", post(serve_restart))
         .route("/api/targets/{name}/dry-run", post(dry_run))
         .route(
             "/api/targets/{name}/excludes",
@@ -419,6 +423,43 @@ async fn sync_now(
     Ok(Json(json!({"ok": true, "message": "pass requested"})))
 }
 
+/// M9 follow-up: restart the sandbox's daemon-owned `opencode serve` (the
+/// attach workflow's server side) — the remote equivalent of the TUI's
+/// in-process `/restart`, which has no server to act on in `--server` mode.
+/// Runs the kill+respawn script via kubeconfig oc exec (no openshell/OIDC).
+async fn serve_restart(
+    State(st): State<Arc<ApiState>>,
+    AxPath(name): AxPath<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let t = with_target(&st, &name)?;
+    let cfg = t.cfg.read().unwrap().clone();
+    if !cfg.serve.unwrap_or(true) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("serve is disabled for target {name}")})),
+        ));
+    }
+    let qualified = crate::daemon::qualified_sandbox(&cfg);
+    let port = crate::daemon::serve_port(&cfg, &qualified);
+    let script = crate::daemon::serve_restart_script(&cfg, port);
+    let oc = st.oc.clone();
+    let out = tokio::task::spawn_blocking(move || crate::daemon::serve_remote(&cfg, &oc, &script))
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("join: {e}")})),
+            )
+        })?
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": format!("remote exec failed: {e}")})),
+            )
+        })?;
+    Ok(Json(json!({"ok": true, "port": port, "detail": out.trim()})))
+}
+
 // ---------------------------------------------------------------------------
 // dry-run (attach wizard preview + on-demand)
 // ---------------------------------------------------------------------------
@@ -721,6 +762,16 @@ async fn get_tunnel(State(st): State<Arc<ApiState>>) -> Json<serde_json::Value> 
     };
     if let Some(obj) = v.as_object_mut() {
         obj.insert("daemon_version".into(), json!(crate::VERSION));
+        // M9: the p2p reverse-forwards (one per serve-enabled p2p target) —
+        // the tunnel banner's attach rows.
+        obj.insert(
+            "forwards".into(),
+            json!(st
+                .forward_statuses
+                .iter()
+                .map(|f| f.snapshot())
+                .collect::<Vec<_>>()),
+        );
     }
     Json(v)
 }

@@ -17,6 +17,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 
 mod api;
 mod daemon;
+mod forward;
 mod remote_driver;
 mod resolver;
 mod transport;

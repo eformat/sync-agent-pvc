@@ -22,6 +22,7 @@
 //! every protocol role does, so banner noise on exec transports fails loudly instead
 //! of corrupting frames.
 
+mod forward;
 mod install;
 mod mcp_mode;
 mod p2p;
